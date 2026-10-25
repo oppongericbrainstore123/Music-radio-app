@@ -23,17 +23,26 @@ jobs:
           flutter-version: '3.19.x'
           channel: 'stable'
 
-      - name: Fix Directory Structure & Build
+      - name: Create Valid Project & Build APK
         run: |
-          # If a nested mobile_app/mobile_app folder exists, move files up to avoid path errors
-          if [ -d "mobile_app/mobile_app" ]; then
-            cp -r mobile_app/mobile_app/* mobile_app/
-          fi
+          # Create a fresh standard Flutter app template
+          flutter create my_app --org com.musicradio --platforms=android
           
-          # Find where pubspec.yaml is and build from that exact directory
-          PROJECT_DIR=$(dirname $(find . -name "pubspec.yaml" -print -quit))
-          echo "Building from: $PROJECT_DIR"
-          cd $PROJECT_DIR
+          # Move user's custom main.dart and pubspec.yaml into the new project if they exist
+          if [ -f "mobile_app/lib/main.dart" ]; then
+            cp mobile_app/lib/main.dart my_app/lib/main.dart
+          elif [ -f "mobile_app/mobile_app/lib/main.dart" ]; then
+            cp mobile_app/mobile_app/lib/main.dart my_app/lib/main.dart
+          fi
+
+          if [ -f "mobile_app/pubspec.yaml" ]; then
+            cp mobile_app/pubspec.yaml my_app/pubspec.yaml
+          elif [ -f "mobile_app/mobile_app/pubspec.yaml" ]; then
+            cp mobile_app/mobile_app/pubspec.yaml my_app/pubspec.yaml
+          fi
+
+          # Enter project directory, fetch packages, and build release APK
+          cd my_app
           flutter pub get
           flutter build apk --release
 
