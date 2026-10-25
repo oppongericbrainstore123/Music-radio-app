@@ -23,12 +23,12 @@ jobs:
           flutter-version: '3.19.x'
           channel: 'stable'
 
-      - name: Create Valid Project & Build APK
+      - name: Create Project, Configure Android & Build APK
         run: |
           # Create a fresh standard Flutter app template
           flutter create my_app --org com.musicradio --platforms=android
           
-          # Move user's custom main.dart and pubspec.yaml into the new project if they exist
+          # Move user's custom main.dart and pubspec.yaml into the new project
           if [ -f "mobile_app/lib/main.dart" ]; then
             cp mobile_app/lib/main.dart my_app/lib/main.dart
           elif [ -f "mobile_app/mobile_app/lib/main.dart" ]; then
@@ -41,8 +41,15 @@ jobs:
             cp mobile_app/mobile_app/pubspec.yaml my_app/pubspec.yaml
           fi
 
-          # Enter project directory, fetch packages, and build release APK
           cd my_app
+
+          # Update minSdk to 21 to support modern audio and storage plugins
+          BUILD_GRADLE="android/app/build.gradle"
+          if [ -f "$BUILD_GRADLE" ]; then
+            sed -i 's/minSdkVersion flutter.minSdkVersion/minSdkVersion 21/g' $BUILD_GRADLE
+            sed -i 's/minSdk = flutter.minSdkVersion/minSdk = 21/g' $BUILD_GRADLE
+          fi
+
           flutter pub get
           flutter build apk --release
 
