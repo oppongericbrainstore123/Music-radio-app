@@ -23,11 +23,16 @@ jobs:
           flutter-version: '3.19.x'
           channel: 'stable'
 
-      - name: Locate Project and Build
+      - name: Fix Directory Structure & Build
         run: |
-          # Automatically find where pubspec.yaml is located
+          # If a nested mobile_app/mobile_app folder exists, move files up to avoid path errors
+          if [ -d "mobile_app/mobile_app" ]; then
+            cp -r mobile_app/mobile_app/* mobile_app/
+          fi
+          
+          # Find where pubspec.yaml is and build from that exact directory
           PROJECT_DIR=$(dirname $(find . -name "pubspec.yaml" -print -quit))
-          echo "Found project at: $PROJECT_DIR"
+          echo "Building from: $PROJECT_DIR"
           cd $PROJECT_DIR
           flutter pub get
           flutter build apk --release
