@@ -25,27 +25,35 @@ jobs:
 
       - name: Create Project and Build APK
         run: |
-          # Create a clean project named 'app_project'
+          # Create clean project
           flutter create app_project --org com.musicradio --platforms=android
 
-          # Copy your custom main.dart and pubspec.yaml into the project
+          # Explicitly copy your custom code from mobile_app folder
           if [ -f "mobile_app/lib/main.dart" ]; then
             cp mobile_app/lib/main.dart app_project/lib/main.dart
+            echo "Successfully copied mobile_app/lib/main.dart"
+          else
+            echo "ERROR: mobile_app/lib/main.dart not found!"
+            exit 1
           fi
 
           if [ -f "mobile_app/pubspec.yaml" ]; then
             cp mobile_app/pubspec.yaml app_project/pubspec.yaml
+            echo "Successfully copied mobile_app/pubspec.yaml"
+          else
+            echo "ERROR: mobile_app/pubspec.yaml not found!"
+            exit 1
           fi
 
           cd app_project
 
-          # Automatically inject Internet Permission into AndroidManifest.xml
+          # Inject Internet Permission into AndroidManifest.xml
           MANIFEST="android/app/src/main/AndroidManifest.xml"
           if [ -f "$MANIFEST" ]; then
             sed -i '/<application/i \    <uses-permission android:name="android.permission.INTERNET"/>' $MANIFEST
           fi
 
-          # Update minSdk to 24 in build.gradle for path_provider and file_picker
+          # Update minSdk to 24 for file_picker and path_provider
           BUILD_GRADLE="android/app/build.gradle"
           if [ -f "$BUILD_GRADLE" ]; then
             sed -i 's/minSdkVersion flutter.minSdkVersion/minSdkVersion 24/g' $BUILD_GRADLE
