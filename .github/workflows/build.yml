@@ -23,44 +23,238 @@ jobs:
           flutter-version: '3.19.x'
           channel: 'stable'
 
-      - name: Build Custom APK
+      - name: Generate and Build App
         run: |
-          # Create a clean standalone workspace
-          flutter create build_workspace --org com.musicradio --platforms=android
+          flutter create app_project --org com.musicradio --platforms=android
+          cd app_project
 
-          # Copy root lib/ folder into the workspace
-          if [ -d "lib" ]; then
-            rm -rf build_workspace/lib
-            cp -r lib build_workspace/lib
-            echo "Copied root lib/ folder successfully"
-          elif [ -d "mobile_app/lib" ]; then
-            rm -rf build_workspace/lib
-            cp -r mobile_app/lib build_workspace/lib
-            echo "Copied mobile_app/lib folder successfully"
-          fi
+          # Write pubspec.yaml with all required multimedia dependencies
+          cat << 'EOF' > pubspec.yaml
+          name: music_radio_app
+          description: A multimedia radio, streaming, and local player app.
+          publish_to: 'none'
+          version: 1.0.0+1
 
-          # Copy root pubspec.yaml into the workspace
-          if [ -f "pubspec.yaml" ]; then
-            cp pubspec.yaml build_workspace/pubspec.yaml
-            echo "Copied root pubspec.yaml successfully"
-          elif [ -f "mobile_app/pubspec.yaml" ]; then
-            cp mobile_app/pubspec.yaml build_workspace/pubspec.yaml
-            echo "Copied mobile_app/pubspec.yaml successfully"
-          fi
+          environment:
+            sdk: '>=3.0.0 <4.0.0'
 
-          cd build_workspace
+          dependencies:
+            flutter:
+              sdk: flutter
+            just_audio: ^0.9.36
+            http: ^1.2.0
+            path_provider: ^2.1.2
+            file_picker: ^6.1.1
 
-          # Automatically inject Internet Permission into AndroidManifest.xml
+          dev_dependencies:
+            flutter_test:
+              sdk: flutter
+            flutter_lints: ^3.0.0
+
+          flutter:
+            uses-material-design: true
+          EOF
+
+          # Write lib/main.dart with the 4-tab multimedia interface
+          cat << 'EOF' > lib/main.dart
+          import 'package:flutter/material.dart';
+          import 'package:just_audio/just_audio.dart';
+          import 'package:file_picker/file_picker.dart';
+          import 'package:path_provider/path_provider.dart';
+          import 'dart:io';
+
+          void main() {
+            runApp(const MusicRadioApp());
+          }
+
+          class MusicRadioApp extends StatelessWidget {
+            const MusicRadioApp({super.key});
+
+            @override
+            Widget build(BuildContext context) {
+              return MaterialApp(
+                title: 'Music & Radio Hub',
+                theme: ThemeData(
+                  primarySwatch: Colors.deepPurple,
+                  useMaterial3: true,
+                ),
+                home: const MainHomeScreen(),
+              );
+            }
+          }
+
+          class MainHomeScreen extends StatefulWidget {
+            const MainHomeScreen({super.key});
+
+            @override
+            State<MainHomeScreen> createState() => _MainHomeScreenState();
+          }
+
+          class _MainHomeScreenState extends State<MainHomeScreen> {
+            int _currentIndex = 0;
+            final AudioPlayer _audioPlayer = AudioPlayer();
+            String _nowPlaying = "Nothing playing";
+
+            final List<Map<String, String>> _radioStations = [
+              {"name": "Global Hit Radio", "url": "https://stream.zeno.fm/f3wvbbqmdg8uv"},
+              {"name": "Smooth Jazz Broadcast", "url": "https://stream.zeno.fm/0r0xa792m8quv"},
+              {"name": "Classical Masterpieces", "url": "https://stream.zeno.fm/bb8779ka5quv"},
+            ];
+
+            @override
+            void dispose() {
+              _audioPlayer.dispose();
+              super.dispose();
+            }
+
+            Future<void> _playAudio(String url, String title) async {
+              try {
+                await _audioPlayer.setUrl(url);
+                await _audioPlayer.play();
+                setState(() {
+                  _nowPlaying = title;
+                });
+              } catch (e) {
+                setState(() {
+                  _nowPlaying = "Error playing audio";
+                });
+              }
+            }
+
+            @override
+            Widget build(BuildContext context) {
+              final List<Widget> pages = [
+                _buildRadioTab(),
+                _buildOnlineTab(),
+                _buildFavoritesTab(),
+                _buildLocalTab(),
+              ];
+
+              return Scaffold(
+                appBar: AppBar(
+                  title: const Text('Music & Radio Hub'),
+                  backgroundColor: Colors.deepPurple.shade100,
+                ),
+                body: Column(
+                  children: [
+                    Expanded(child: pages[_currentIndex]),
+                    Container(
+                      padding: const EdgeInsets.all(12),
+                      color: Colors.deepPurple.shade50,
+                      child: Row(
+                        children: [
+                          const Icon(Icons.music_note, color: Colors.deepPurple),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Text(
+                              "Playing: $_nowPlaying",
+                              style: const TextStyle(fontWeight: FontWeight.bold),
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                          IconButton(
+                            icon: const Icon(Icons.pause),
+                            onPressed: () => _audioPlayer.pause(),
+                          ),
+                          IconButton(
+                            icon: const Icon(Icons.play_arrow),
+                            onPressed: () => _audioPlayer.play(),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+                bottomNavigationBar: BottomNavigationBar(
+                  currentIndex: _currentIndex,
+                  type: BottomNavigationBarType.fixed,
+                  selectedItemColor: Colors.deepPurple,
+                  unselectedItemColor: Colors.grey,
+                  onTap: (index) => setState(() => _currentIndex = index),
+                  items: const [
+                    BottomNavigationBarItem(icon: Icon(Icons.radio), label: 'Radio'),
+                    BottomNavigationBarItem(icon: Icon(Icons.cloud_download), label: 'Online'),
+                    BottomNavigationBarItem(icon: Icon(Icons.favorite), label: 'Favorites'),
+                    BottomNavigationBarItem(icon: Icon(Icons.folder), label: 'Local'),
+                  ],
+                ),
+              );
+            }
+
+            Widget _buildRadioTab() {
+              return ListView.builder(
+                itemCount: _radioStations.length,
+                itemBuilder: (context, index) {
+                  final station = _radioStations[index];
+                  return ListTile(
+                    leading: const CircleAvatar(child: Icon(Icons.radio)),
+                    title: Text(station["name"]!),
+                    subtitle: const Text("Live Global Stream"),
+                    trailing: IconButton(
+                      icon: const Icon(Icons.play_arrow, color: Colors.deepPurple),
+                      onPressed: () => _playAudio(station["url"]!, station["name"]!),
+                    ),
+                  );
+                },
+              );
+            }
+
+            Widget _buildOnlineTab() {
+              return Center(
+                child: Padding(
+                  padding: const EdgeInsets.all(16.0),
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      const Icon(Icons.cloud_sync, size: 64, color: Colors.deepPurple),
+                      const SizedBox(height: 16),
+                      const Text("Stream & Download Audio", style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                      const SizedBox(height: 8),
+                      ElevatedButton.icon(
+                        onPressed: () => _playAudio("https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3", "Online Track 1"),
+                        icon: const Icon(Icons.play_arrow),
+                        label: const Text("Stream Sample Track"),
+                      ),
+                    ],
+                  ),
+                ),
+              );
+            }
+
+            Widget _buildFavoritesTab() {
+              return const Center(
+                child: Text("Your favorite stations and tracks will appear here.", style: TextStyle(color: Colors.grey)),
+              );
+            }
+
+            Widget _buildLocalTab() {
+              return Center(
+                child: ElevatedButton.icon(
+                  onPressed: () async {
+                    FilePickerResult? result = await FilePicker.platform.pickFiles(type: FileType.audio);
+                    if (result != null && result.files.single.path != null) {
+                      _playAudio(result.files.single.path!, result.files.single.name);
+                    }
+                  },
+                  icon: const Icon(Icons.folder_open),
+                  label: const Text("Pick Local Audio File"),
+                ),
+              );
+            }
+          }
+          EOF
+
+          # Inject Internet Permission into AndroidManifest.xml
           MANIFEST="android/app/src/main/AndroidManifest.xml"
           if [ -f "$MANIFEST" ]; then
             sed -i '/<application/i \    <uses-permission android:name="android.permission.INTERNET"/>' $MANIFEST
           fi
 
-          # Update minSdk to 24 for path_provider and file_picker
+          # Update minSdk to 24 for audio and storage plugins
           BUILD_GRADLE="android/app/build.gradle"
           if [ -f "$BUILD_GRADLE" ]; then
             sed -i 's/minSdkVersion flutter.minSdkVersion/minSdkVersion 24/g' $BUILD_GRADLE
-            sed -i 's/minSdk = flutter.minSdkVersion/minSdkVersion 24/g' $BUILD_GRADLE
+            sed -i 's/minSdk = flutter.minSdkVersion/minSdk = 24/g' $BUILD_GRADLE
           fi
 
           flutter pub get
@@ -70,4 +264,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: app-release
-          path: 'build_workspace/build/app/outputs/flutter-apk/app-release.apk'
+          path: 'app_project/build/app/outputs/flutter-apk/app-release.apk'
