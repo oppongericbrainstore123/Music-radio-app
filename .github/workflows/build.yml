@@ -23,31 +23,31 @@ jobs:
           flutter-version: '3.19.x'
           channel: 'stable'
 
-      - name: Build Flutter APK
+      - name: Build Custom APK
         run: |
-          # Check where pubspec.yaml is located
+          # Create a clean standalone workspace
+          flutter create build_workspace --org com.musicradio --platforms=android
+
+          # Safely copy your custom code and pubspec from mobile_app
+          if [ -f "mobile_app/lib/main.dart" ]; then
+            cp mobile_app/lib/main.dart build_workspace/lib/main.dart
+            echo "Copied main.dart successfully"
+          fi
+
           if [ -f "mobile_app/pubspec.yaml" ]; then
-            echo "Found project inside mobile_app folder"
-            cd mobile_app
-          elif [ -f "pubspec.yaml" ]; then
-            echo "Found project in root directory"
-          else
-            echo "Creating fresh Flutter project structure..."
-            flutter create . --org com.musicradio --platforms=android
+            cp mobile_app/pubspec.yaml build_workspace/pubspec.yaml
+            echo "Copied pubspec.yaml successfully"
           fi
 
-          # Ensure Android directory exists
-          if [ ! -d "android" ]; then
-            flutter create . --org com.musicradio --platforms=android
-          fi
+          cd build_workspace
 
-          # Inject Internet Permission into AndroidManifest.xml
+          # Automatically inject Internet Permission into AndroidManifest.xml
           MANIFEST="android/app/src/main/AndroidManifest.xml"
           if [ -f "$MANIFEST" ]; then
             sed -i '/<application/i \    <uses-permission android:name="android.permission.INTERNET"/>' $MANIFEST
           fi
 
-          # Update minSdk to 24 for file_picker and path_provider
+          # Update minSdk to 24 for path_provider and file_picker
           BUILD_GRADLE="android/app/build.gradle"
           if [ -f "$BUILD_GRADLE" ]; then
             sed -i 's/minSdkVersion flutter.minSdkVersion/minSdkVersion 24/g' $BUILD_GRADLE
@@ -61,4 +61,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: app-release
-          path: '**/build/app/outputs/flutter-apk/app-release.apk'
+          path: 'build_workspace/build/app/outputs/flutter-apk/app-release.apk'
