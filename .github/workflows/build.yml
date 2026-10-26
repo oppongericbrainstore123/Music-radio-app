@@ -56,7 +56,7 @@ jobs:
             uses-material-design: true
           EOF
 
-          # Write lib/main.dart with Full Screen Pop-up Player, Track Details, and Unrestricted Streams
+          # Write lib/main.dart with Error-Free Storage Downloads and Styled UI Matching Reference
           cat << 'EOF' > lib/main.dart
           import 'package:flutter/material.dart';
           import 'package:just_audio/just_audio.dart';
@@ -78,20 +78,13 @@ jobs:
             @override
             Widget build(BuildContext context) {
               return MaterialApp(
-                title: 'Music & Radio Hub',
+                title: 'Weezer',
                 theme: ThemeData(
-                  primarySwatch: Colors.deepPurple,
-                  useMaterial3: true,
-                  brightness: Brightness.light,
-                  colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple, brightness: Brightness.light),
-                ),
-                darkTheme: ThemeData(
-                  primarySwatch: Colors.deepPurple,
-                  useMaterial3: true,
                   brightness: Brightness.dark,
-                  colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple, brightness: Brightness.dark),
+                  scaffoldBackgroundColor: const Color(0xFF121212),
+                  primarySwatch: Colors.deepPurple,
+                  useMaterial3: true,
                 ),
-                themeMode: ThemeMode.dark, // Default to sleek dark theme like reference
                 home: const MainHomeScreen(),
               );
             }
@@ -107,38 +100,39 @@ jobs:
           class _MainHomeScreenState extends State<MainHomeScreen> {
             int _currentIndex = 0;
             final AudioPlayer _audioPlayer = AudioPlayer();
-            String _currentTitle = "Nothing playing";
-            String _currentArtist = "Select a track or station";
+            String _currentTitle = "Spontaneous Worship";
+            String _currentArtist = "Yefter Nkansah";
             String _currentArtwork = "";
-            String _currentUrl = "";
             bool _isDownloading = false;
             bool _isPlaying = false;
             bool _showFullPlayer = false;
             final List<Map<String, dynamic>> _favorites = [];
-            final List<Map<String, dynamic>> _history = [];
-            Timer? _sleepTimer;
-            String _activePreset = "Normal";
+            final List<Map<String, dynamic>> _downloadedSongs = [];
+            Duration _duration = Duration.zero;
+            Duration _position = Duration.zero;
 
             @override
             void initState() {
               super.initState();
               _audioPlayer.playerStateStream.listen((state) {
-                setState(() {
-                  _isPlaying = state.playing;
-                });
+                setState(() => _isPlaying = state.playing);
+              });
+              _audioPlayer.durationStream.listen((d) {
+                setState(() => _duration = d ?? Duration.zero);
+              });
+              _audioPlayer.positionStream.listen((p) {
+                setState(() => _position = p);
               });
             }
 
             @override
             void dispose() {
               _audioPlayer.dispose();
-              _sleepTimer?.cancel();
               super.dispose();
             }
 
             Future<void> _playAudio(String url, String title, String artist, [String artwork = ""]) async {
               try {
-                _currentUrl = url;
                 await _audioPlayer.setUrl(url);
                 await _audioPlayer.play();
                 setState(() {
@@ -146,53 +140,40 @@ jobs:
                   _currentArtist = artist;
                   _currentArtwork = artwork;
                 });
-
-                final historyItem = {"title": title, "artist": artist, "url": url, "artwork": artwork};
-                if (!_history.any((h) => h['title'] == title)) {
-                  _history.insert(0, historyItem);
-                  if (_history.length > 25) _history.removeLast();
-                }
               } catch (e) {
                 setState(() {
-                  _currentTitle = "Error playing audio";
-                  _currentArtist = "";
+                  _currentTitle = "Error playing track";
                 });
               }
             }
 
-            Future<void> _downloadMusicFile(String url, String fileName) async {
+            Future<void> _downloadMusicFile(String url, String fileName, String artist, String artwork) async {
               try {
-                var status = await Permission.storage.request();
-                if (!status.isGranted) {
-                  await Permission.manageExternalStorage.request();
-                }
-
                 setState(() => _isDownloading = true);
-
-                Directory? directory;
-                if (Platform.isAndroid) {
-                  directory = Directory('/storage/emulated/0/Music');
-                  if (!await directory.exists()) {
-                    directory = await getExternalStorageDirectory();
-                  }
-                } else {
-                  directory = await getApplicationDocumentsDirectory();
-                }
-
-                if (directory == null) {
-                  directory = await getApplicationDocumentsDirectory();
-                }
-
+                // Use safe application support directory to avoid Permission Denied (errno = 13)
+                final directory = await getApplicationSupportDirectory();
                 final filePath = '${directory.path}/$fileName';
+                
                 final response = await http.get(Uri.parse(url));
                 final file = File(filePath);
                 await file.writeAsBytes(response.bodyBytes);
 
-                setState(() => _isDownloading = false);
+                final downloadedItem = {
+                  "title": fileName.replaceAll('.m4a', ''),
+                  "artist": artist,
+                  "url": filePath,
+                  "artwork": artwork,
+                  "isLocal": true
+                };
 
+                if (!_downloadedSongs.any((d) => d['title'] == downloadedItem['title'])) {
+                  _downloadedSongs.add(downloadedItem);
+                }
+
+                setState(() => _isDownloading = false);
                 if (mounted) {
                   ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('Downloaded successfully to Music folder!'), backgroundColor: Colors.green),
+                    const SnackBar(content: Text('Downloaded successfully to Offline Songs!'), backgroundColor: Colors.green),
                   );
                 }
               } catch (e) {
@@ -205,82 +186,70 @@ jobs:
               }
             }
 
-            void _toggleFavorite(Map<String, dynamic> item) {
-              setState(() {
-                if (_favorites.contains(item)) {
-                  _favorites.remove(item);
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('Removed from Favorites'), duration: Duration(milliseconds: 500)),
-                  );
-                } else {
-                  _favorites.add(item);
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('Added to Favorites!'), duration: Duration(milliseconds: 500)),
-                  );
-                }
-              });
-            }
-
             @override
             Widget build(BuildContext context) {
               final List<Widget> pages = [
-                GlobalRadioTab(onPlay: _playAudio, favorites: _favorites, onToggleFavorite: _toggleFavorite),
-                OnlineMusicTab(onPlay: _playAudio, onDownload: _downloadMusicFile, favorites: _favorites, onToggleFavorite: _toggleFavorite),
+                HomeTab(onPlay: _playAudio, onDownload: _downloadMusicFile, downloadedSongs: _downloadedSongs),
+                SearchTab(onPlay: _playAudio, onDownload: _downloadMusicFile),
                 FavoritesTab(favorites: _favorites, onPlay: _playAudio),
-                HistoryTab(history: _history, onPlay: _playAudio),
-                LocalFileTab(onPlay: _playAudio),
+                LibraryTab(downloadedSongs: _downloadedSongs, onPlay: _playAudio),
               ];
 
               return Scaffold(
                 appBar: AppBar(
-                  title: const Text('Music & Radio Hub', style: TextStyle(fontWeight: FontWeight.bold)),
-                  backgroundColor: Colors.deepPurple.shade900,
-                  elevation: 2,
+                  title: Row(
+                    children: [
+                      const Icon(Icons.music_note, color: Color(0xFF1ED760)),
+                      const SizedBox(width: 8),
+                      const Text('Weezer', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 22, color: Colors.white)),
+                    ],
+                  ),
+                  backgroundColor: Colors.transparent,
+                  elevation: 0,
+                  actions: [
+                    IconButton(
+                      icon: const Icon(Icons.settings, color: Colors.white),
+                      onPressed: () {
+                        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Settings & Preferences')));
+                      },
+                    ),
+                  ],
                 ),
                 body: Stack(
                   children: [
                     Column(
                       children: [
                         Expanded(child: pages[_currentIndex]),
-                        // Mini Player Bar
+                        // Sticky Mini Player Bar matching reference
                         GestureDetector(
                           onTap: () => setState(() => _showFullPlayer = true),
                           child: Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-                            color: Colors.grey.shade900,
+                            margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFF282828),
+                              borderRadius: BorderRadius.circular(8),
+                            ),
                             child: Row(
                               children: [
                                 ClipRRect(
-                                  borderRadius: BorderRadius.circular(6),
+                                  borderRadius: BorderRadius.circular(4),
                                   child: _currentArtwork.isNotEmpty
-                                      ? Image.network(_currentArtwork, width: 45, height: 45, fit: BoxFit.cover, errorBuilder: (_,__,___) => const Icon(Icons.music_note))
-                                      : Container(
-                                          width: 45,
-                                          height: 45,
-                                          color: Colors.deepPurple,
-                                          child: const Icon(Icons.music_note, color: Colors.white),
-                                        ),
+                                      ? Image.network(_currentArtwork, width: 40, height: 40, fit: BoxFit.cover, errorBuilder: (_,__,___) => const Icon(Icons.music_note))
+                                      : Container(width: 40, height: 40, color: Colors.deepPurple, child: const Icon(Icons.music_note)),
                                 ),
                                 const SizedBox(width: 12),
                                 Expanded(
                                   child: Column(
                                     crossAxisAlignment: CrossAxisAlignment.start,
                                     children: [
-                                      Text(
-                                        _isDownloading ? "Downloading..." : _currentTitle,
-                                        style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14, color: Colors.white),
-                                        overflow: TextOverflow.ellipsis,
-                                      ),
-                                      Text(
-                                        _currentArtist,
-                                        style: TextStyle(fontSize: 12, color: Colors.grey.shade400),
-                                        overflow: TextOverflow.ellipsis,
-                                      ),
+                                      Text(_currentTitle, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Colors.white), overflow: TextOverflow.ellipsis),
+                                      Text(_currentArtist, style: TextStyle(fontSize: 11, color: Colors.grey.shade400), overflow: TextOverflow.ellipsis),
                                     ],
                                   ),
                                 ),
                                 IconButton(
-                                  icon: Icon(_isPlaying ? Icons.pause : Icons.play_arrow, color: Colors.white, size: 28),
+                                  icon: Icon(_isPlaying ? Icons.pause : Icons.play_arrow, color: Colors.white),
                                   onPressed: () {
                                     if (_isPlaying) {
                                       _audioPlayer.pause();
@@ -289,13 +258,17 @@ jobs:
                                     }
                                   },
                                 ),
+                                IconButton(
+                                  icon: const Icon(Icons.skip_next, color: Colors.white),
+                                  onPressed: () {},
+                                ),
                               ],
                             ),
                           ),
                         ),
                       ],
                     ),
-                    // Full Screen Pop-up Player Overlay
+                    // Full Screen Pop-up Player matching reference
                     if (_showFullPlayer)
                       FullPlayerScreen(
                         title: _currentTitle,
@@ -303,6 +276,8 @@ jobs:
                         artwork: _currentArtwork,
                         isPlaying: _isPlaying,
                         audioPlayer: _audioPlayer,
+                        duration: _duration,
+                        position: _position,
                         onClose: () => setState(() => _showFullPlayer = false),
                       ),
                   ],
@@ -310,16 +285,15 @@ jobs:
                 bottomNavigationBar: BottomNavigationBar(
                   currentIndex: _currentIndex,
                   type: BottomNavigationBarType.fixed,
-                  selectedItemColor: Colors.deepPurpleAccent,
+                  selectedItemColor: const Color(0xFF1ED760),
                   unselectedItemColor: Colors.grey,
-                  backgroundColor: Colors.black87,
+                  backgroundColor: const Color(0xFF181818),
                   onTap: (index) => setState(() => _currentIndex = index),
                   items: const [
-                    BottomNavigationBarItem(icon: Icon(Icons.radio), label: 'Radio'),
-                    BottomNavigationBarItem(icon: Icon(Icons.library_music), label: 'Online'),
-                    BottomNavigationBarItem(icon: Icon(Icons.favorite), label: 'Favorites'),
-                    BottomNavigationBarItem(icon: Icon(Icons.history), label: 'History'),
-                    BottomNavigationBarItem(icon: Icon(Icons.folder), label: 'Local'),
+                    BottomNavigationBarItem(icon: Icon(Icons.home), label: ''),
+                    BottomNavigationBarItem(icon: Icon(Icons.search), label: ''),
+                    BottomNavigationBarItem(icon: Icon(Icons.favorite), label: ''),
+                    BottomNavigationBarItem(icon: Icon(Icons.library_music), label: ''),
                   ],
                 ),
               );
@@ -332,6 +306,8 @@ jobs:
             final String artwork;
             final bool isPlaying;
             final AudioPlayer audioPlayer;
+            final Duration duration;
+            final Duration position;
             final VoidCallback onClose;
 
             const FullPlayerScreen({
@@ -341,13 +317,22 @@ jobs:
               required this.artwork,
               required this.isPlaying,
               required this.audioPlayer,
+              required this.duration,
+              required this.position,
               required this.onClose,
             });
+
+            String _formatDuration(Duration d) {
+              String twoDigits(int n) => n.toString().padLeft(2, '0');
+              final minutes = twoDigits(d.inMinutes.remainder(60));
+              final seconds = twoDigits(d.inSeconds.remainder(60));
+              return "$minutes:$seconds";
+            }
 
             @override
             Widget build(BuildContext context) {
               return Scaffold(
-                backgroundColor: Colors.grey.shade900,
+                backgroundColor: const Color(0xFF121212),
                 appBar: AppBar(
                   backgroundColor: Colors.transparent,
                   elevation: 0,
@@ -355,7 +340,7 @@ jobs:
                     icon: const Icon(Icons.keyboard_arrow_down, size: 32, color: Colors.white),
                     onPressed: onClose,
                   ),
-                  title: const Text("Now Playing", style: TextStyle(fontSize: 16, color: Colors.white)),
+                  title: const Text("Offline songs", style: TextStyle(fontSize: 14, color: Colors.white)),
                   centerTitle: true,
                 ),
                 body: Padding(
@@ -364,49 +349,55 @@ jobs:
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
                       ClipRRect(
-                        borderRadius: BorderRadius.circular(16),
+                        borderRadius: BorderRadius.circular(12),
                         child: artwork.isNotEmpty
-                            ? Image.network(artwork, width: 280, height: 280, fit: BoxFit.cover, errorBuilder: (_,__,___) => const Icon(Icons.music_note, size: 100))
-                            : Container(
-                                width: 280,
-                                height: 280,
-                                color: Colors.deepPurple,
-                                child: const Icon(Icons.music_note, size: 100, color: Colors.white),
-                              ),
+                            ? Image.network(artwork, width: 300, height: 300, fit: BoxFit.cover, errorBuilder: (_,__,___) => const Icon(Icons.music_note, size: 100))
+                            : Container(width: 300, height: 300, color: Colors.deepPurple, child: const Icon(Icons.music_note, size: 100)),
                       ),
-                      const SizedBox(height: 40),
-                      Text(
-                        title,
-                        style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Colors.white),
-                        textAlign: TextAlign.center,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
+                      const SizedBox(height: 30),
+                      Align(
+                        alignment: Alignment.centerLeft,
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(title, style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: Colors.white)),
+                            const SizedBox(height: 4),
+                            Text(artist, style: TextStyle(fontSize: 14, color: Colors.grey.shade400)),
+                          ],
+                        ),
                       ),
-                      const SizedBox(height: 8),
-                      Text(
-                        artist,
-                        style: TextStyle(fontSize: 16, color: Colors.grey.shade400),
-                        textAlign: TextAlign.center,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
+                      const SizedBox(height: 20),
+                      Slider(
+                        activeColor: Colors.white,
+                        inactiveColor: Colors.grey.shade800,
+                        min: 0,
+                        max: duration.inMilliseconds.toDouble() > 0 ? duration.inMilliseconds.toDouble() : 1.0,
+                        value: position.inMilliseconds.toDouble().clamp(0.0, duration.inMilliseconds.toDouble() > 0 ? duration.inMilliseconds.toDouble() : 1.0),
+                        onChanged: (val) {
+                          audioPlayer.seek(Duration(milliseconds: val.toInt()));
+                        },
                       ),
-                      const SizedBox(height: 40),
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 16),
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Text(_formatDuration(position), style: TextStyle(color: Colors.grey.shade400, fontSize: 12)),
+                            Text(_formatDuration(duration), style: TextStyle(color: Colors.grey.shade400, fontSize: 12)),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 20),
                       Row(
-                        mainAxisAlignment: MainAxisAlignment.center,
+                        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                         children: [
-                          IconButton(
-                            icon: const Icon(Icons.replay_10, size: 36, color: Colors.white),
-                            onPressed: () {
-                              final newPos = audioPlayer.position - const Duration(seconds: 10);
-                              audioPlayer.seek(newPos < Duration.zero ? Duration.zero : newPos);
-                            },
-                          ),
-                          const SizedBox(width: 24),
+                          IconButton(icon: const Icon(Icons.shuffle, color: Colors.white), onPressed: () {}),
+                          IconButton(icon: const Icon(Icons.skip_previous, size: 36, color: Colors.white), onPressed: () {}),
                           CircleAvatar(
-                            radius: 36,
+                            radius: 32,
                             backgroundColor: Colors.white,
                             child: IconButton(
-                              icon: Icon(isPlaying ? Icons.pause : Icons.play_arrow, size: 40, color: Colors.black),
+                              icon: Icon(isPlaying ? Icons.pause : Icons.play_arrow, size: 36, color: Colors.black),
                               onPressed: () {
                                 if (isPlaying) {
                                   audioPlayer.pause();
@@ -416,14 +407,8 @@ jobs:
                               },
                             ),
                           ),
-                          const SizedBox(width: 24),
-                          IconButton(
-                            icon: const Icon(Icons.forward_10, size: 36, color: Colors.white),
-                            onPressed: () {
-                              final newPos = audioPlayer.position + const Duration(seconds: 10);
-                              audioPlayer.seek(newPos);
-                            },
-                          ),
+                          IconButton(icon: const Icon(Icons.skip_next, size: 36, color: Colors.white), onPressed: () {}),
+                          IconButton(icon: const Icon(Icons.repeat, color: Colors.white), onPressed: () {}),
                         ],
                       ),
                     ],
@@ -433,240 +418,105 @@ jobs:
             }
           }
 
-          class GlobalRadioTab extends StatefulWidget {
+          class HomeTab extends StatelessWidget {
             final Function(String, String, String, [String]) onPlay;
-            final List<Map<String, dynamic>> favorites;
-            final Function(Map<String, dynamic>) onToggleFavorite;
+            final Function(String, String, String, String) onDownload;
+            final List<Map<String, dynamic>> downloadedSongs;
 
-            const GlobalRadioTab({super.key, required this.onPlay, required this.favorites, required this.onToggleFavorite});
-
-            @override
-            State<GlobalRadioTab> createState() => _GlobalRadioTabState();
-          }
-
-          class _GlobalRadioTabState extends State<GlobalRadioTab> {
-            List<dynamic> _countries = [];
-            List<dynamic> _stations = [];
-            String _selectedCountry = "Ghana";
-            String _searchQuery = "";
-            bool _isLoadingCountries = true;
-            bool _isLoadingStations = false;
-
-            @override
-            void initState() {
-              super.initState();
-              _fetchCountries();
-              _fetchStations("Ghana");
-            }
-
-            Future<void> _fetchCountries() async {
-              try {
-                final response = await http.get(Uri.parse('https://de1.api.radio-browser.info/json/countries'));
-                if (response.statusCode == 200) {
-                  final data = json.decode(response.body);
-                  setState(() {
-                    _countries = data;
-                    _isLoadingCountries = false;
-                  });
-                }
-              } catch (e) {
-                setState(() => _isLoadingCountries = false);
-              }
-            }
-
-            Future<void> _fetchStations(String countryName) async {
-              setState(() {
-                _isLoadingStations = true;
-                _selectedCountry = countryName;
-              });
-              try {
-                final encodedCountry = Uri.encodeComponent(countryName);
-                final response = await http.get(Uri.parse('https://de1.api.radio-browser.info/json/stations/bycountry/$encodedCountry'));
-                if (response.statusCode == 200) {
-                  final data = json.decode(response.body);
-                  setState(() {
-                    _stations = data;
-                    _isLoadingStations = false;
-                  });
-                }
-              } catch (e) {
-                setState(() => _isLoadingStations = false);
-              }
-            }
+            const HomeTab({super.key, required this.onPlay, required this.onDownload, required this.downloadedSongs});
 
             @override
             Widget build(BuildContext context) {
-              final filteredStations = _stations.where((station) {
-                final name = (station['name'] ?? '').toLowerCase();
-                final tags = (station['tags'] ?? '').toLowerCase();
-                return name.contains(_searchQuery.toLowerCase()) || tags.contains(_searchQuery.toLowerCase());
-              }).toList();
-
-              return Padding(
-                padding: const EdgeInsets.all(12.0),
-                child: Column(
-                  children: [
-                    Card(
-                      elevation: 2,
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                      child: Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                        child: Row(
-                          children: [
-                            const Icon(Icons.public, color: Colors.deepPurpleAccent),
-                            const SizedBox(width: 12),
-                            const Text("Country:", style: TextStyle(fontWeight: FontWeight.bold)),
-                            const SizedBox(width: 12),
-                            Expanded(
-                              child: _isLoadingCountries
-                                  ? const LinearProgressIndicator()
-                                  : DropdownButtonHideUnderline(
-                                      child: DropdownButton<String>(
-                                        value: _countries.any((c) => c['name'] == _selectedCountry) ? _selectedCountry : null,
-                                        isExpanded: true,
-                                        hint: const Text("Select Country"),
-                                        items: _countries.map<DropdownMenuItem<String>>((c) {
-                                          return DropdownMenuItem<String>(
-                                            value: c['name'],
-                                            child: Text(c['name'] ?? '', overflow: TextOverflow.ellipsis),
-                                          );
-                                        }).toList(),
-                                        onChanged: (val) {
-                                          if (val != null) {
-                                            _fetchStations(val);
-                                          }
-                                        },
-                                      ),
-                                    ),
-                            ),
-                          ],
+              return ListView(
+                padding: const EdgeInsets.all(12),
+                children: [
+                  const Text("Recommended radios", style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white)),
+                  const SizedBox(height: 10),
+                  _buildRecCard("Heavenly Tongues", "Freda Boateng Junior", "https://stream.zeno.fm/f3wvbbqmdg8uv"),
+                  _buildRecCard("Sie Sie Me Medley", "KOFI OWUSU PEPRAH", "https://stream.zeno.fm/0r0xa792m8quv"),
+                  _buildRecCard("Fa Me Sie", "Joe Mettle", "https://stream.zeno.fm/bb8779ka5quv"),
+                  const SizedBox(height: 20),
+                  const Text("Playlist", style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white)),
+                  const SizedBox(height: 10),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Container(
+                          padding: const EdgeInsets.all(16),
+                          decoration: BoxDecoration(color: Colors.teal.shade800, borderRadius: BorderRadius.circular(8)),
+                          child: const Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Icon(Icons.download, color: Colors.white, size: 32),
+                              SizedBox(height: 12),
+                              Text("Offline songs", style: TextStyle(fontWeight: FontWeight.bold, color: Colors.white)),
+                            ],
+                          ),
                         ),
                       ),
-                    ),
-                    const SizedBox(height: 10),
-                    TextField(
-                      decoration: InputDecoration(
-                        labelText: "Search FM station or genre...",
-                        prefixIcon: const Icon(Icons.search, color: Colors.deepPurpleAccent),
-                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-                        filled: true,
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Container(
+                          padding: const EdgeInsets.all(16),
+                          decoration: BoxDecoration(color: Colors.brown.shade700, borderRadius: BorderRadius.circular(8)),
+                          child: const Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Icon(Icons.folder, color: Colors.white, size: 32),
+                              SizedBox(height: 12),
+                              Text("Local songs", style: TextStyle(fontWeight: FontWeight.bold, color: Colors.white)),
+                            ],
+                          ),
+                        ),
                       ),
-                      onChanged: (val) => setState(() => _searchQuery = val),
-                    ),
-                    const SizedBox(height: 10),
-                    Expanded(
-                      child: _isLoadingStations
-                          ? const Center(child: CircularProgressIndicator())
-                          : filteredStations.isEmpty
-                              ? const Center(child: Text("No FM stations found."))
-                              : ListView.builder(
-                                  itemCount: filteredStations.length,
-                                  itemBuilder: (context, index) {
-                                    final station = filteredStations[index];
-                                    final name = station['name'] ?? 'Unknown Station';
-                                    final url = station['url_resolved'] ?? station['url'] ?? '';
-                                    final tags = station['tags'] ?? 'Live FM Broadcast';
-                                    final favicon = station['favicon'] ?? '';
-                                    
-                                    final itemData = {
-                                      "title": name,
-                                      "artist": _selectedCountry,
-                                      "url": url,
-                                      "type": "radio",
-                                      "artwork": favicon
-                                    };
-                                    final isFav = widget.favorites.any((f) => f['title'] == name);
+                    ],
+                  ),
+                ],
+              );
+            }
 
-                                    return Card(
-                                      elevation: 1,
-                                      margin: const EdgeInsets.symmetric(vertical: 6),
-                                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                                      child: ListTile(
-                                        leading: ClipRRect(
-                                          borderRadius: BorderRadius.circular(8),
-                                          child: favicon.isNotEmpty
-                                              ? Image.network(
-                                                  favicon,
-                                                  width: 45,
-                                                  height: 45,
-                                                  fit: BoxFit.cover,
-                                                  errorBuilder: (context, error, stackTrace) => Container(
-                                                    width: 45,
-                                                    height: 45,
-                                                    color: Colors.deepPurple.shade900,
-                                                    child: const Icon(Icons.radio, color: Colors.white),
-                                                  ),
-                                                )
-                                              : Container(
-                                                  width: 45,
-                                                  height: 45,
-                                                  color: Colors.deepPurple.shade900,
-                                                  child: const Icon(Icons.radio, color: Colors.white),
-                                                ),
-                                        ),
-                                        title: Text(name, style: const TextStyle(fontWeight: FontWeight.bold)),
-                                        subtitle: Text(tags, maxLines: 1, overflow: TextOverflow.ellipsis),
-                                        trailing: Row(
-                                          mainAxisSize: MainAxisSize.min,
-                                          children: [
-                                            IconButton(
-                                              icon: Icon(isFav ? Icons.favorite : Icons.favorite_border, color: isFav ? Colors.red : Colors.grey),
-                                              onPressed: () => widget.onToggleFavorite(itemData),
-                                            ),
-                                            IconButton(
-                                              icon: const Icon(Icons.play_circle_fill, color: Colors.deepPurpleAccent, size: 36),
-                                              onPressed: () => widget.onPlay(url, name, _selectedCountry, favicon),
-                                            ),
-                                          ],
-                                        ),
-                                      ),
-                                    );
-                                  },
-                                ),
-                    ),
-                  ],
+            Widget _buildRecCard(String title, String artist, String url) {
+              return Card(
+                color: const Color(0xFF1E1E1E),
+                child: ListTile(
+                  title: Text(title, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                  subtitle: Text(artist, style: TextStyle(color: Colors.grey.shade400)),
+                  trailing: IconButton(
+                    icon: const Icon(Icons.play_arrow, color: Color(0xFF1ED760)),
+                    onPressed: () => onPlay(url, title, artist),
+                  ),
                 ),
               );
             }
           }
 
-          class OnlineMusicTab extends StatefulWidget {
+          class SearchTab extends StatefulWidget {
             final Function(String, String, String, [String]) onPlay;
-            final Function(String, String) onDownload;
-            final List<Map<String, dynamic>> favorites;
-            final Function(Map<String, dynamic>) onToggleFavorite;
+            final Function(String, String, String, String) onDownload;
 
-            const OnlineMusicTab({
-              super.key,
-              required this.onPlay,
-              required this.onDownload,
-              required this.favorites,
-              required this.onToggleFavorite,
-            });
+            const SearchTab({super.key, required this.onPlay, required this.onDownload});
 
             @override
-            State<OnlineMusicTab> createState() => _OnlineMusicTabState();
+            State<SearchTab> createState() => _SearchTabState();
           }
 
-          class _OnlineMusicTabState extends State<OnlineMusicTab> {
+          class _SearchTabState extends State<SearchTab> {
             List<dynamic> _tracks = [];
             bool _isLoading = false;
-            final TextEditingController _searchController = TextEditingController(text: "Worship");
+            final TextEditingController _controller = TextEditingController(text: "Fameye");
 
             @override
             void initState() {
               super.initState();
-              _searchMusic("Worship");
+              _search("Fameye");
             }
 
-            Future<void> _searchMusic(String query) async {
-              if (query.trim().isEmpty) return;
+            Future<void> _search(String query) async {
               setState(() => _isLoading = true);
               try {
-                final encoded = Uri.encodeComponent(query);
-                final response = await http.get(Uri.parse('https://itunes.apple.com/search?term=$encoded&entity=song&limit=50'));
-                if (response.statusCode == 200) {
-                  final data = json.decode(response.body);
+                final res = await http.get(Uri.parse('https://itunes.apple.com/search?term=${Uri.encodeComponent(query)}&entity=song&limit=40'));
+                if (res.statusCode == 200) {
+                  final data = json.decode(res.body);
                   setState(() {
                     _tracks = data['results'] ?? [];
                     _isLoading = false;
@@ -684,89 +534,58 @@ jobs:
                 child: Column(
                   children: [
                     TextField(
-                      controller: _searchController,
+                      controller: _controller,
+                      style: const TextStyle(color: Colors.white),
                       decoration: InputDecoration(
-                        labelText: "Search any song, artist, or album worldwide...",
-                        prefixIcon: const Icon(Icons.search, color: Colors.deepPurpleAccent),
-                        suffixIcon: IconButton(
-                          icon: const Icon(Icons.send, color: Colors.deepPurpleAccent),
-                          onPressed: () => _searchMusic(_searchController.text),
-                        ),
-                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                        hintText: "Search music, artists...",
+                        hintStyle: TextStyle(color: Colors.grey.shade500),
+                        prefixIcon: const Icon(Icons.search, color: Colors.white),
                         filled: true,
+                        fillColor: const Color(0xFF282828),
+                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: BorderSide.none),
                       ),
-                      onSubmitted: (val) => _searchMusic(val),
+                      onSubmitted: (val) => _search(val),
                     ),
                     const SizedBox(height: 10),
                     Expanded(
                       child: _isLoading
-                          ? const Center(child: CircularProgressIndicator())
-                          : _tracks.isEmpty
-                              ? const Center(child: Text("No songs found. Try another search."))
-                              : ListView.builder(
-                                  itemCount: _tracks.length,
-                                  itemBuilder: (context, index) {
-                                    final track = _tracks[index];
-                                    final title = track['trackName'] ?? 'Unknown Track';
-                                    final artist = track['artistName'] ?? 'Unknown Artist';
-                                    final album = track['collectionName'] ?? 'Single';
-                                    final previewUrl = track['previewUrl'] ?? '';
-                                    final artwork = track['artworkUrl100'] ?? '';
-                                    // High-res artwork upgrade
-                                    final highResArtwork = artwork.isNotEmpty ? artwork.replaceAll('100x100bb', '600x600bb') : '';
+                          ? const Center(child: CircularProgressIndicator(color: Color(0xFF1ED760)))
+                          : ListView.builder(
+                              itemCount: _tracks.length,
+                              itemBuilder: (context, index) {
+                                final track = _tracks[index];
+                                final title = track['trackName'] ?? '';
+                                final artist = track['artistName'] ?? '';
+                                final previewUrl = track['previewUrl'] ?? '';
+                                final artwork = track['artworkUrl100'] ?? '';
+                                final highRes = artwork.isNotEmpty ? artwork.replaceAll('100x100bb', '600x600bb') : '';
 
-                                    final itemData = {
-                                      "title": title,
-                                      "artist": artist,
-                                      "url": previewUrl,
-                                      "type": "music",
-                                      "artwork": highResArtwork
-                                    };
-                                    final isFav = widget.favorites.any((f) => f['title'] == title);
-
-                                    return Card(
-                                      elevation: 1,
-                                      margin: const EdgeInsets.symmetric(vertical: 6),
-                                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                                      child: ListTile(
-                                        leading: ClipRRect(
-                                          borderRadius: BorderRadius.circular(8),
-                                          child: artwork.isNotEmpty
-                                              ? Image.network(artwork, width: 45, height: 45, fit: BoxFit.cover)
-                                              : Container(
-                                                  width: 45,
-                                                  height: 45,
-                                                  color: Colors.deepPurple.shade900,
-                                                  child: const Icon(Icons.music_note, color: Colors.white),
-                                                ),
+                                return Card(
+                                  color: const Color(0xFF1E1E1E),
+                                  child: ListTile(
+                                    leading: ClipRRect(
+                                      borderRadius: BorderRadius.circular(4),
+                                      child: artwork.isNotEmpty ? Image.network(artwork, width: 45, height: 45, fit: BoxFit.cover) : const Icon(Icons.music_note),
+                                    ),
+                                    title: Text(title, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold), maxLines: 1),
+                                    subtitle: Text("$artist", style: TextStyle(color: Colors.grey.shade400), maxLines: 1),
+                                    trailing: Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        IconButton(
+                                          icon: const Icon(Icons.download, color: Colors.blueAccent),
+                                          onPressed: () => widget.onDownload(previewUrl, "$title - $artist.m4a", artist, highRes),
                                         ),
-                                        title: Text(title, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.bold)),
-                                        subtitle: Text("$artist • $album", maxLines: 1, overflow: TextOverflow.ellipsis),
-                                        trailing: Row(
-                                          mainAxisSize: MainAxisSize.min,
-                                          children: [
-                                            IconButton(
-                                              icon: Icon(isFav ? Icons.favorite : Icons.favorite_border, color: isFav ? Colors.red : Colors.grey),
-                                              onPressed: () => widget.onToggleFavorite(itemData),
-                                            ),
-                                            IconButton(
-                                              icon: const Icon(Icons.download, color: Colors.blueAccent),
-                                              onPressed: previewUrl.isNotEmpty
-                                                  ? () => widget.onDownload(previewUrl, "$title - $artist.m4a")
-                                                  : null,
-                                            ),
-                                            IconButton(
-                                              icon: const Icon(Icons.play_circle_fill, color: Colors.deepPurpleAccent, size: 36),
-                                              onPressed: previewUrl.isNotEmpty
-                                                  ? () => widget.onPlay(previewUrl, title, artist, highResArtwork)
-                                                  : null,
-                                            ),
-                                          ],
+                                        IconButton(
+                                          icon: const Icon(Icons.play_circle_fill, color: Color(0xFF1ED760), size: 36),
+                                          onPressed: () => widget.onPlay(previewUrl, title, artist, highRes),
                                         ),
-                                      ),
-                                    );
-                                  },
-                                ),
+                                      ],
+                                    ),
+                                  ),
+                                );
+                              },
+                            ),
                     ),
                   ],
                 ),
@@ -783,26 +602,18 @@ jobs:
             @override
             Widget build(BuildContext context) {
               if (favorites.isEmpty) {
-                return const Center(
-                  child: Text("Your bookmarked favorite stations and songs appear here.", style: TextStyle(color: Colors.grey)),
-                );
+                return const Center(child: Text("No favorites added yet.", style: TextStyle(color: Colors.grey)));
               }
               return ListView.builder(
-                padding: const EdgeInsets.all(12),
                 itemCount: favorites.length,
                 itemBuilder: (context, index) {
                   final item = favorites[index];
-                  return Card(
-                    child: ListTile(
-                      leading: item['artwork'] != null && item['artwork'].toString().isNotEmpty
-                          ? Image.network(item['artwork'], width: 45, height: 45, fit: BoxFit.cover, errorBuilder: (_,__,___) => const Icon(Icons.star))
-                          : const CircleAvatar(child: Icon(Icons.star)),
-                      title: Text(item['title'] ?? '', style: const TextStyle(fontWeight: FontWeight.bold)),
-                      subtitle: Text(item['artist'] ?? '', maxLines: 1, overflow: TextOverflow.ellipsis),
-                      trailing: IconButton(
-                        icon: const Icon(Icons.play_circle_fill, color: Colors.deepPurpleAccent, size: 36),
-                        onPressed: () => onPlay(item['url'], item['title'], item['artist'] ?? '', item['artwork'] ?? ''),
-                      ),
+                  return ListTile(
+                    title: Text(item['title'], style: const TextStyle(color: Colors.white)),
+                    subtitle: Text(item['artist'], style: TextStyle(color: Colors.grey.shade400)),
+                    trailing: IconButton(
+                      icon: const Icon(Icons.play_arrow, color: Color(0xFF1ED760)),
+                      onPressed: () => onPlay(item['url'], item['title'], item['artist'], item['artwork']),
                     ),
                   );
                 },
@@ -810,91 +621,46 @@ jobs:
             }
           }
 
-          class HistoryTab extends StatelessWidget {
-            final List<Map<String, dynamic>> history;
+          class LibraryTab extends StatelessWidget {
+            final List<Map<String, dynamic>> downloadedSongs;
             final Function(String, String, String, [String]) onPlay;
 
-            const HistoryTab({super.key, required this.history, required this.onPlay});
+            const LibraryTab({super.key, required this.downloadedSongs, required this.onPlay});
 
             @override
             Widget build(BuildContext context) {
-              if (history.isEmpty) {
-                return const Center(
-                  child: Text("Your recently played tracks and stations will appear here.", style: TextStyle(color: Colors.grey)),
-                );
+              if (downloadedSongs.isEmpty) {
+                return const Center(child: Text("No offline downloaded songs yet.", style: TextStyle(color: Colors.grey)));
               }
               return ListView.builder(
-                padding: const EdgeInsets.all(12),
-                itemCount: history.length,
+                itemCount: downloadedSongs.length,
                 itemBuilder: (context, index) {
-                  final item = history[index];
+                  final song = downloadedSongs[index];
                   return Card(
+                    color: const Color(0xFF1E1E1E),
                     child: ListTile(
-                      leading: item['artwork'] != null && item['artwork'].toString().isNotEmpty
-                          ? Image.network(item['artwork'], width: 45, height: 45, fit: BoxFit.cover, errorBuilder: (_,__,___) => const Icon(Icons.history))
-                          : const CircleAvatar(child: Icon(Icons.history)),
-                      title: Text(item['title'] ?? '', style: const TextStyle(fontWeight: FontWeight.bold)),
-                      subtitle: Text(item['artist'] ?? '', maxLines: 1, overflow: TextOverflow.ellipsis),
+                      leading: Image.network(song['artwork'], width: 45, height: 45, fit: BoxFit.cover, errorBuilder: (_,__,___) => const Icon(Icons.music_note)),
+                      title: Text(song['title'], style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                      subtitle: Text(song['artist'], style: TextStyle(color: Colors.grey.shade400)),
                       trailing: IconButton(
-                        icon: const Icon(Icons.play_circle_fill, color: Colors.deepPurpleAccent, size: 36),
-                        onPressed: () => onPlay(item['url'], item['title'], item['artist'] ?? '', item['artwork'] ?? ''),
+                        icon: const Icon(Icons.play_circle_fill, color: Color(0xFF1ED760), size: 36),
+                        onPressed: () => onPlay(song['url'], song['title'], song['artist'], song['artwork']),
                       ),
                     ),
                   );
                 },
-              );
-            }
-          }
-
-          class LocalFileTab extends StatelessWidget {
-            final Function(String, String, String, [String]) onPlay;
-
-            const LocalFileTab({super.key, required this.onPlay});
-
-            @override
-            Widget build(BuildContext context) {
-              return Center(
-                child: Padding(
-                  padding: const EdgeInsets.all(24.0),
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      const Icon(Icons.folder_shared, size: 64, color: Colors.deepPurpleAccent),
-                      const SizedBox(height: 16),
-                      const Text(
-                        "Downloaded music is saved directly to your device's Music folder!",
-                        textAlign: TextAlign.center,
-                        style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-                      ),
-                      const SizedBox(height: 20),
-                      ElevatedButton.icon(
-                        onPressed: () async {
-                          FilePickerResult? result = await FilePicker.platform.pickFiles(type: FileType.audio);
-                          if (result != null && result.files.single.path != null) {
-                            onPlay(result.files.single.path!, result.files.single.name, "Local Storage");
-                          }
-                        },
-                        icon: const Icon(Icons.folder_open),
-                        label: const Text("Pick File from Device Music Folder"),
-                        style: ElevatedButton.styleFrom(backgroundColor: Colors.deepPurple.shade900),
-                      ),
-                    ],
-                  ),
-                ),
               );
             }
           }
           EOF
 
-          # Inject Internet Permission and Storage Permissions into AndroidManifest.xml
+          # Inject Internet Permission into AndroidManifest.xml
           MANIFEST="android/app/src/main/AndroidManifest.xml"
           if [ -f "$MANIFEST" ]; then
             sed -i '/<application/i \    <uses-permission android:name="android.permission.INTERNET"/>' $MANIFEST
-            sed -i '/<application/i \    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"/>' $MANIFEST
-            sed -i '/<application/i \    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"/>' $MANIFEST
           fi
 
-          # Update minSdk to 24 for audio and storage plugins
+          # Update minSdk to 24 for audio plugins
           BUILD_GRADLE="android/app/build.gradle"
           if [ -f "$BUILD_GRADLE" ]; then
             sed -i 's/minSdkVersion flutter.minSdkVersion/minSdkVersion 24/g' $BUILD_GRADLE
