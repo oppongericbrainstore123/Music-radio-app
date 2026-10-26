@@ -14,7 +14,6 @@ class MusicRadioApp extends StatelessWidget {
       title: 'Music & Radio',
       theme: ThemeData(
         brightness: Brightness.dark,
-        primarySwatch: Colors.deepPurple,
         scaffoldBackgroundColor: const Color(0xFF121212),
       ),
       home: const PlayerScreen(),
@@ -33,10 +32,10 @@ class PlayerScreen extends StatefulWidget {
 class _PlayerScreenState extends State<PlayerScreen> {
   late AudioPlayer _audioPlayer;
   bool _isPlaying = false;
-  String _currentTitle = 'Select a Stream to Play';
+  String _currentTitle = 'Global Radio Hub';
+  String _statusText = 'Ready to Play';
 
-  // Sample live radio stream URL (Public domain classical / test stream)
-  final String sampleStreamUrl = 'https://stream.zeno.fm/f3wvbbqmdg8uv';
+  final String sampleStreamUrl = 'https://stream.live.vc.bbcmedia.co.uk/bbc_world_service';
 
   @override
   void initState() {
@@ -56,18 +55,23 @@ class _PlayerScreenState extends State<PlayerScreen> {
         await _audioPlayer.pause();
         setState(() {
           _isPlaying = false;
+          _statusText = 'Paused';
         });
       } else {
+        setState(() {
+          _statusText = 'Connecting to stream...';
+        });
         await _audioPlayer.setUrl(sampleStreamUrl);
         await _audioPlayer.play();
         setState(() {
           _isPlaying = true;
-          _currentTitle = 'Live Global Radio Stream';
+          _statusText = 'Streaming Live';
         });
       }
     } catch (e) {
       setState(() {
-        _currentTitle = 'Error playing stream';
+        _isPlaying = false;
+        _statusText = 'Failed to connect. Check internet.';
       });
     }
   }
@@ -90,12 +94,12 @@ class _PlayerScreenState extends State<PlayerScreen> {
               const SizedBox(height: 30),
               Text(
                 _currentTitle,
-                style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+                style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
                 textAlign: TextAlign.center,
               ),
               const SizedBox(height: 10),
               Text(
-                _isPlaying ? 'Streaming Live...' : 'Ready to Play',
+                _statusText,
                 style: TextStyle(color: Colors.grey[400], fontSize: 14),
               ),
               const SizedBox(height: 50),
