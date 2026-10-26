@@ -55,7 +55,7 @@ jobs:
             uses-material-design: true
           EOF
 
-          # Write lib/main.dart with global country radio search, streaming, and downloads
+          # Write lib/main.dart with live API integration and smooth navigation
           cat << 'EOF' > lib/main.dart
           import 'package:flutter/material.dart';
           import 'package:just_audio/just_audio.dart';
@@ -113,7 +113,7 @@ jobs:
                 });
               } catch (e) {
                 setState(() {
-                  _nowPlaying = "Error playing audio";
+                  _nowPlaying = "Error playing audio stream";
                 });
               }
             }
@@ -135,7 +135,7 @@ jobs:
                 setState(() => _isDownloading = false);
                 if (mounted) {
                   ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('Download failed. Check connection.')),
+                    const SnackBar(content: Text('Download failed. Check your network connection.')),
                   );
                 }
               }
@@ -144,7 +144,7 @@ jobs:
             @override
             Widget build(BuildContext context) {
               final List<Widget> pages = [
-                const GlobalRadioSearchTab(),
+                GlobalRadioTab(onPlay: _playAudio),
                 OnlineMusicTab(onPlay: _playAudio, onDownload: _downloadFile),
                 const FavoritesTab(),
                 LocalFileTab(onPlay: _playAudio),
@@ -202,53 +202,71 @@ jobs:
             }
           }
 
-          class GlobalRadioSearchTab extends StatefulWidget {
-            const GlobalRadioSearchTab({super.key});
+          class GlobalRadioTab extends StatefulWidget {
+            final Function(String, String) onPlay;
+            const GlobalRadioTab({super.key, required this.onPlay});
 
             @override
-            State<GlobalRadioSearchTab> createState() => _GlobalRadioSearchTabState();
+            State<GlobalRadioTab> createState() => _GlobalRadioTabState();
           }
 
-          class _GlobalRadioSearchTabState extends State<GlobalRadioSearchTab> {
+          class _GlobalRadioTabState extends State<GlobalRadioTab> {
+            List<dynamic> _countries = [];
+            List<dynamic> _stations = [];
             String _selectedCountry = "Ghana";
             String _searchQuery = "";
-            List<dynamic> _stations = [];
-            bool _isLoading = false;
+            bool _isLoadingCountries = true;
+            bool _isLoadingStations = false;
 
-            final List<String> _countries = [
-              "Ghana", "United States", "United Kingdom", "Nigeria", "South Africa", "Canada", "Germany", "France"
-            ];
+            @override
+            void initState() {
+              super.initState();
+              _fetchCountries();
+              _fetchStations("Ghana");
+            }
 
-            final Map<String, List<Map<String, String>>> _mockCountryStations = {
-              "Ghana": [
-                {"name": "Joy 99.7 FM", "url": "https://stream.zeno.fm/f3wvbbqmdg8uv", "genre": "News/Talk"},
-                {"name": "Peace 104.3 FM", "url": "https://stream.zeno.fm/0r0xa792m8quv", "genre": "Akan/Talk"},
-                {"name": "Citi 97.3 FM", "url": "https://stream.zeno.fm/bb8779ka5quv", "genre": "English/Music"}
-              ],
-              "United States": [
-                {"name": "Hot 97 NY", "url": "https://stream.zeno.fm/f3wvbbqmdg8uv", "genre": "Hip Hop"},
-                {"name": "Jazz 24 Seattle", "url": "https://stream.zeno.fm/0r0xa792m8quv", "genre": "Smooth Jazz"}
-              ],
-              "United Kingdom": [
-                {"name": "BBC World Service", "url": "https://stream.zeno.fm/bb8779ka5quv", "genre": "Global News"},
-                {"name": "Capital XTRA London", "url": "https://stream.zeno.fm/f3wvbbqmdg8uv", "genre": "Dance/Urban"}
-              ],
-              "Nigeria": [
-                {"name": "Beat 99.9 FM Lagos", "url": "https://stream.zeno.fm/0r0xa792m8quv", "genre": "Afrobeats"},
-                {"name": "Cool 96.9 FM", "url": "https://stream.zeno.fm/bb8779ka5quv", "genre": "Pop/Hits"}
-              ]
-            };
+            Future<void> _fetchCountries() async {
+              try {
+                final response = await http.get(Uri.parse('https://de1.api.radio-browser.info/json/countries'));
+                if (response.statusCode == 200) {
+                  final data = json.decode(response.body);
+                  setState(() {
+                    _countries = data;
+                    _isLoadingCountries = false;
+                  });
+                }
+              } catch (e) {
+                setState(() => _isLoadingCountries = false);
+              }
+            }
+
+            Future<void> _fetchStations(String countryName) async {
+              setState(() {
+                _isLoadingStations = true;
+                _selectedCountry = countryName;
+              });
+              try {
+                final encodedCountry = Uri.encodeComponent(countryName);
+                final response = await http.get(Uri.parse('https://de1.api.radio-browser.info/json/stations/bycountry/$encodedCountry'));
+                if (response.statusCode == 200) {
+                  final data = json.decode(response.body);
+                  setState(() {
+                    _stations = data;
+                    _isLoadingStations = false;
+                  });
+                }
+              } catch (e) {
+                setState(() => _isLoadingStations = false);
+              }
+            }
 
             @override
             Widget build(BuildContext context) {
-              final stations = _mockCountryStations[_selectedCountry] ?? [
-                {"name": "Global Hit Radio", "url": "https://stream.zeno.fm/f3wvbbqmdg8uv", "genre": "Universal"}
-              ];
-
-              final filteredStations = stations.where((s) => 
-                s["name"]!.toLowerCase().contains(_searchQuery.toLowerCase()) ||
-                s["genre"]!.toLowerCase().contains(_searchQuery.toLowerCase())
-              ).toList();
+              final filteredStations = _stations.where((station) {
+                final name = (station['name'] ?? '').toLowerCase();
+                final tags = (station['tags'] ?? '').toLowerCase();
+                return name.contains(_searchQuery.toLowerCase()) || tags.contains(_searchQuery.toLowerCase());
+              }).toList();
 
               return Padding(
                 padding: const EdgeInsets.all(12.0),
@@ -259,12 +277,24 @@ jobs:
                         const Text("Country: ", style: TextStyle(fontWeight: FontWeight.bold)),
                         const SizedBox(width: 8),
                         Expanded(
-                          child: DropdownButton<String>(
-                            value: _selectedCountry,
-                            isExpanded: true,
-                            items: _countries.map((c) => DropdownMenuItem(value: c, child: Text(c))).toList(),
-                            onChanged: (val) => setState(() => _selectedCountry = val ?? "Ghana"),
-                          ),
+                          child: _isLoadingCountries
+                              ? const LinearProgressIndicator()
+                              : DropdownButton<String>(
+                                  value: _countries.any((c) => c['name'] == _selectedCountry) ? _selectedCountry : null,
+                                  isExpanded: true,
+                                  hint: const Text("Select Country"),
+                                  items: _countries.map<DropdownMenuItem<String>>((c) {
+                                    return DropdownMenuItem<String>(
+                                      value: c['name'],
+                                      child: Text(c['name'] ?? ''),
+                                    );
+                                  }).toList(),
+                                  onChanged: (val) {
+                                    if (val != null) {
+                                      _fetchStations(val);
+                                    }
+                                  },
+                                ),
                         ),
                       ],
                     ),
@@ -279,26 +309,37 @@ jobs:
                     ),
                     const SizedBox(height: 10),
                     Expanded(
-                      child: ListView.builder(
-                        itemCount: filteredStations.length,
-                        itemBuilder: (context, index) {
-                          final station = filteredStations[index];
-                          return Card(
-                            child: ListTile(
-                              leading: const CircleAvatar(child: Icon(Icons.radio)),
-                              title: Text(station["name"]!),
-                              subtitle: Text("Genre: ${station["genre"]}"),
-                              trailing: IconButton(
-                                icon: const Icon(Icons.play_arrow, color: Colors.deepPurple),
-                                onPressed: () {
-                                  // Trigger playback from main state
-                                  context.findAncestorStateOfType<_MainHomeScreenState>()?._playAudio(station["url"]!, station["name"]!);
-                                },
-                              ),
-                            ),
-                          );
-                        },
-                      ),
+                      child: _isLoadingStations
+                          ? const Center(child: CircularProgressIndicator())
+                          : filteredStations.isEmpty
+                              ? const Center(child: Text("No FM stations found."))
+                              : ListView.builder(
+                                  itemCount: filteredStations.length,
+                                  itemBuilder: (context, index) {
+                                    final station = filteredStations[index];
+                                    final name = station['name'] ?? 'Unknown Station';
+                                    final url = station['url_resolved'] ?? station['url'] ?? '';
+                                    final tags = station['tags'] ?? 'Live Stream';
+                                    return Card(
+                                      child: ListTile(
+                                        leading: station['favicon'] != null && station['favicon'].isNotEmpty
+                                            ? Image.network(
+                                                station['favicon'],
+                                                width: 40,
+                                                height: 40,
+                                                errorBuilder: (context, error, stackTrace) => const Icon(Icons.radio),
+                                              )
+                                            : const CircleAvatar(child: Icon(Icons.radio)),
+                                        title: Text(name),
+                                        subtitle: Text("Tags: $tags", maxLines: 1, overflow: TextOverflow.ellipsis),
+                                        trailing: IconButton(
+                                          icon: const Icon(Icons.play_arrow, color: Colors.deepPurple),
+                                          onPressed: () => widget.onPlay(url, name),
+                                        ),
+                                      ),
+                                    );
+                                  },
+                                ),
                     ),
                   ],
                 ),
@@ -317,21 +358,41 @@ jobs:
           }
 
           class _OnlineMusicTabState extends State<OnlineMusicTab> {
+            List<dynamic> _tracks = [];
+            bool _isLoading = true;
             String _searchQuery = "";
 
-            final List<Map<String, String>> _tracks = [
-              {"title": "Acoustic Breeze", "artist": "Bensound", "album": "Relaxation Album", "url": "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3"},
-              {"title": "Creative Minds", "artist": "AudioLibrary", "album": "Focus Playlist", "url": "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-2.mp3"},
-              {"title": "Summer Memories", "artist": "VibeMusic", "album": "Sunshine Sessions", "url": "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-3.mp3"},
-            ];
+            @override
+            void initState() {
+              super.initState();
+              _fetchOnlineTracks();
+            }
+
+            Future<void> _fetchOnlineTracks() async {
+              try {
+                final response = await http.get(Uri.parse('https://itunes.apple.com/search?term=pop&entity=song&limit=30'));
+                if (response.statusCode == 200) {
+                  final data = json.decode(response.body);
+                  setState(() {
+                    _tracks = data['results'] ?? [];
+                    _isLoading = false;
+                  });
+                }
+              } catch (e) {
+                setState(() => _isLoading = false);
+              }
+            }
 
             @override
             Widget build(BuildContext context) {
-              final filtered = _tracks.where((t) => 
-                t["title"]!.toLowerCase().contains(_searchQuery.toLowerCase()) ||
-                t["artist"]!.toLowerCase().contains(_searchQuery.toLowerCase()) ||
-                t["album"]!.toLowerCase().contains(_searchQuery.toLowerCase())
-              ).toList();
+              final filteredTracks = _tracks.where((track) {
+                final title = (track['trackName'] ?? '').toLowerCase();
+                final artist = (track['artistName'] ?? '').toLowerCase();
+                final album = (track['collectionName'] ?? '').toLowerCase();
+                return title.contains(_searchQuery.toLowerCase()) ||
+                       artist.contains(_searchQuery.toLowerCase()) ||
+                       album.contains(_searchQuery.toLowerCase());
+              }).toList();
 
               return Padding(
                 padding: const EdgeInsets.all(12.0),
@@ -347,32 +408,48 @@ jobs:
                     ),
                     const SizedBox(height: 10),
                     Expanded(
-                      child: ListView.builder(
-                        itemCount: filtered.length,
-                        itemBuilder: (context, index) {
-                          final track = filtered[index];
-                          return Card(
-                            child: ListTile(
-                              leading: const CircleAvatar(child: Icon(Icons.music_note)),
-                              title: Text(track["title"]!),
-                              subtitle: Text("${track["artist"]} • ${track["album"]}"),
-                              trailing: Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  IconButton(
-                                    icon: const Icon(Icons.download, color: Colors.blue),
-                                    onPressed: () => widget.onDownload(track["url"]!, "${track["title"]}.mp3"),
-                                  ),
-                                  IconButton(
-                                    icon: const Icon(Icons.play_arrow, color: Colors.deepPurple),
-                                    onPressed: () => widget.onPlay(track["url"]!, track["title"]!),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          );
-                        },
-                      ),
+                      child: _isLoading
+                          ? const Center(child: CircularProgressIndicator())
+                          : filteredTracks.isEmpty
+                              ? const Center(child: Text("No songs or albums found."))
+                              : ListView.builder(
+                                  itemCount: filteredTracks.length,
+                                  itemBuilder: (context, index) {
+                                    final track = filteredTracks[index];
+                                    final title = track['trackName'] ?? 'Unknown Track';
+                                    final artist = track['artistName'] ?? 'Unknown Artist';
+                                    final album = track['collectionName'] ?? 'Single';
+                                    final previewUrl = track['previewUrl'] ?? '';
+                                    final artwork = track['artworkUrl100'] ?? '';
+
+                                    return Card(
+                                      child: ListTile(
+                                        leading: artwork.isNotEmpty
+                                            ? Image.network(artwork, width: 40, height: 40, fit: BoxFit.cover)
+                                            : const CircleAvatar(child: Icon(Icons.music_note)),
+                                        title: Text(title, maxLines: 1, overflow: TextOverflow.ellipsis),
+                                        subtitle: Text("$artist • $album", maxLines: 1, overflow: TextOverflow.ellipsis),
+                                        trailing: Row(
+                                          mainAxisSize: MainAxisSize.min,
+                                          children: [
+                                            IconButton(
+                                              icon: const Icon(Icons.download, color: Colors.blue),
+                                              onPressed: previewUrl.isNotEmpty
+                                                  ? () => widget.onDownload(previewUrl, "$title - $artist.m4a")
+                                                  : null,
+                                            ),
+                                            IconButton(
+                                              icon: const Icon(Icons.play_arrow, color: Colors.deepPurple),
+                                              onPressed: previewUrl.isNotEmpty
+                                                  ? () => widget.onPlay(previewUrl, title)
+                                                  : null,
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                    );
+                                  },
+                                ),
                     ),
                   ],
                 ),
