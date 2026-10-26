@@ -28,10 +28,9 @@ jobs:
           flutter create app_project --org com.musicradio --platforms=android
           cd app_project
 
-          # Write pubspec.yaml with all required multimedia dependencies
           cat << 'EOF' > pubspec.yaml
           name: music_radio_app
-          description: A multimedia radio, streaming, and local player app.
+          description: A multimedia radio, streaming, and offline music player app.
           publish_to: 'none'
           version: 1.0.0+1
 
@@ -56,11 +55,9 @@ jobs:
             uses-material-design: true
           EOF
 
-          # Write lib/main.dart with Full-Length Open Audio Streaming, Public Music Downloads, and Global Radio
           cat << 'EOF' > lib/main.dart
           import 'package:flutter/material.dart';
           import 'package:just_audio/just_audio.dart';
-          import 'package:file_picker/file_picker.dart';
           import 'package:path_provider/path_provider.dart';
           import 'package:permission_handler/permission_handler.dart';
           import 'package:http/http.dart' as http;
@@ -102,10 +99,8 @@ jobs:
             String _currentTitle = "Select a track or station";
             String _currentArtist = "Music & Radio Hub";
             String _currentArtwork = "";
-            bool _isDownloading = false;
             bool _isPlaying = false;
             bool _showFullPlayer = false;
-            final List<Map<String, dynamic>> _favorites = [];
             final List<Map<String, dynamic>> _downloadedSongs = [];
             Duration _duration = Duration.zero;
             Duration _position = Duration.zero;
@@ -130,9 +125,13 @@ jobs:
               super.dispose();
             }
 
-            Future<void> _playAudio(String url, String title, String artist, [String artwork = ""]) async {
+            Future<void> _playAudio(String url, String title, String artist, [String artwork = "", bool isLocal = false]) async {
               try {
-                await _audioPlayer.setUrl(url);
+                if (isLocal) {
+                  await _audioPlayer.setFilePath(url);
+                } else {
+                  await _audioPlayer.setUrl(url);
+                }
                 await _audioPlayer.play();
                 setState(() {
                   _currentTitle = title;
@@ -141,7 +140,7 @@ jobs:
                 });
               } catch (e) {
                 setState(() {
-                  _currentTitle = "Error playing stream/track";
+                  _currentTitle = "Error playing file/stream";
                 });
               }
             }
@@ -152,8 +151,6 @@ jobs:
                 if (!status.isGranted) {
                   await Permission.manageExternalStorage.request();
                 }
-
-                setState(() => _isDownloading = true);
 
                 Directory? directory = Directory('/storage/emulated/0/Music');
                 if (!await directory.exists()) {
@@ -175,17 +172,17 @@ jobs:
                 };
 
                 if (!_downloadedSongs.any((d) => d['title'] == downloadedItem['title'])) {
-                  _downloadedSongs.add(downloadedItem);
+                  setState(() {
+                    _downloadedSongs.add(downloadedItem);
+                  });
                 }
 
-                setState(() => _isDownloading = false);
                 if (mounted) {
                   ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(content: Text('Downloaded successfully to Music folder!'), backgroundColor: Colors.green),
+                    const SnackBar(content: Text('Downloaded for Offline Listening!'), backgroundColor: Colors.green),
                   );
                 }
               } catch (e) {
-                setState(() => _isDownloading = false);
                 if (mounted) {
                   ScaffoldMessenger.of(context).showSnackBar(
                     SnackBar(content: Text('Download failed: ${e.toString()}'), backgroundColor: Colors.red),
@@ -197,19 +194,18 @@ jobs:
             @override
             Widget build(BuildContext context) {
               final List<Widget> pages = [
-                GlobalRadioTab(onPlay: _playAudio, favorites: _favorites),
+                GlobalRadioTab(onPlay: _playAudio),
                 FullMusicSearchTab(onPlay: _playAudio, onDownload: _downloadMusicFile),
-                FavoritesTab(favorites: _favorites, onPlay: _playAudio),
-                LibraryTab(downloadedSongs: _downloadedSongs, onPlay: _playAudio),
+                OfflineLibraryTab(downloadedSongs: _downloadedSongs, onPlay: _playAudio),
               ];
 
               return Scaffold(
                 appBar: AppBar(
                   title: Row(
-                    children: [
-                      const Icon(Icons.music_note, color: Colors.greenAccent),
-                      const SizedBox(width: 8),
-                      const Text('Music & Radio Hub', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 20, color: Colors.white)),
+                    children: const [
+                      Icon(Icons.music_note, color: Colors.greenAccent),
+                      SizedBox(width: 8),
+                      Text('Music & Radio Hub', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 20, color: Colors.white)),
                     ],
                   ),
                   backgroundColor: Colors.transparent,
@@ -220,7 +216,6 @@ jobs:
                     Column(
                       children: [
                         Expanded(child: pages[_currentIndex]),
-                        // Sticky Mini Player Bar
                         GestureDetector(
                           onTap: () => setState(() => _showFullPlayer = true),
                           child: Container(
@@ -264,7 +259,6 @@ jobs:
                         ),
                       ],
                     ),
-                    // Full Screen Pop-up Player
                     if (_showFullPlayer)
                       FullPlayerScreen(
                         title: _currentTitle,
@@ -288,8 +282,7 @@ jobs:
                   items: const [
                     BottomNavigationBarItem(icon: Icon(Icons.radio), label: 'Radio'),
                     BottomNavigationBarItem(icon: Icon(Icons.search), label: 'Search'),
-                    BottomNavigationBarItem(icon: Icon(Icons.favorite), label: 'Favorites'),
-                    BottomNavigationBarItem(icon: Icon(Icons.library_music), label: 'Library'),
+                    BottomNavigationBarItem(icon: Icon(Icons.offline_bolt), label: 'Offline Mode'),
                   ],
                 ),
               );
@@ -415,10 +408,9 @@ jobs:
           }
 
           class GlobalRadioTab extends StatefulWidget {
-            final Function(String, String, String, [String]) onPlay;
-            final List<Map<String, dynamic>> favorites;
+            final Function(String, String, String, [String, bool]) onPlay;
 
-            const GlobalRadioTab({super.key, required this.onPlay, required this.favorites});
+            const GlobalRadioTab({super.key, required this.onPlay});
 
             @override
             State<GlobalRadioTab> createState() => _GlobalRadioTabState();
@@ -429,7 +421,6 @@ jobs:
             List<dynamic> _stations = [];
             String _selectedCountry = "Ghana";
             String _searchQuery = "";
-            bool _isLoadingCountries = true;
             bool _isLoadingStations = false;
 
             @override
@@ -443,14 +434,9 @@ jobs:
               try {
                 final response = await http.get(Uri.parse('https://de1.api.radio-browser.info/json/countries'));
                 if (response.statusCode == 200) {
-                  setState(() {
-                    _countries = json.decode(response.body);
-                    _isLoadingCountries = false;
-                  });
+                  setState(() => _countries = json.decode(response.body));
                 }
-              } catch (e) {
-                setState(() => _isLoadingCountries = false);
-              }
+              } catch (_) {}
             }
 
             Future<void> _fetchStations(String countryName) async {
@@ -467,7 +453,7 @@ jobs:
                     _isLoadingStations = false;
                   });
                 }
-              } catch (e) {
+              } catch (_) {
                 setState(() => _isLoadingStations = false);
               }
             }
@@ -527,7 +513,7 @@ jobs:
                                     subtitle: Text(_selectedCountry, style: TextStyle(color: Colors.grey.shade400)),
                                     trailing: IconButton(
                                       icon: const Icon(Icons.play_circle_fill, color: Colors.greenAccent, size: 36),
-                                      onPressed: () => widget.onPlay(url, name, _selectedCountry, favicon),
+                                      onPressed: () => widget.onPlay(url, name, _selectedCountry, favicon, false),
                                     ),
                                   ),
                                 );
@@ -541,7 +527,7 @@ jobs:
           }
 
           class FullMusicSearchTab extends StatefulWidget {
-            final Function(String, String, String, [String]) onPlay;
+            final Function(String, String, String, [String, bool]) onPlay;
             final Function(String, String, String, String) onDownload;
 
             const FullMusicSearchTab({super.key, required this.onPlay, required this.onDownload});
@@ -551,7 +537,7 @@ jobs:
           }
 
           class _FullMusicSearchTabState extends State<FullMusicSearchTab> {
-            List<Map<String, String>> _tracks = [
+            final List<Map<String, String>> _tracks = [
               {
                 "title": "Acoustic Breeze",
                 "artist": "Bensound",
@@ -569,12 +555,6 @@ jobs:
                 "artist": "VibeMusic",
                 "url": "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-3.mp3",
                 "artwork": "https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=500"
-              },
-              {
-                "title": "Inspiring Cinematic",
-                "artist": "Relaxation Sound",
-                "url": "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-4.mp3",
-                "artwork": "https://images.unsplash.com/photo-1511379938547-c1f69419868d?w=500"
               },
             ];
 
@@ -597,7 +577,7 @@ jobs:
                     TextField(
                       style: const TextStyle(color: Colors.white),
                       decoration: InputDecoration(
-                        hintText: "Search full tracks...",
+                        hintText: "Search tracks to stream & download...",
                         hintStyle: TextStyle(color: Colors.grey.shade500),
                         prefixIcon: const Icon(Icons.search, color: Colors.white),
                         filled: true,
@@ -630,7 +610,7 @@ jobs:
                                   ),
                                   IconButton(
                                     icon: const Icon(Icons.play_circle_fill, color: Colors.greenAccent, size: 36),
-                                    onPressed: () => widget.onPlay(track['url']!, track['title']!, track['artist']!, track['artwork']!),
+                                    onPressed: () => widget.onPlay(track['url']!, track['title']!, track['artist']!, track['artwork']!, false),
                                   ),
                                 ],
                               ),
@@ -645,68 +625,55 @@ jobs:
             }
           }
 
-          class FavoritesTab extends StatelessWidget {
-            final List<Map<String, dynamic>> favorites;
-            final Function(String, String, String, [String]) onPlay;
-
-            const FavoritesTab({super.key, required this.favorites, required this.onPlay});
-
-            @override
-            Widget build(BuildContext context) {
-              if (favorites.isEmpty) {
-                return const Center(child: Text("No favorites added yet.", style: TextStyle(color: Colors.grey)));
-              }
-              return ListView.builder(
-                itemCount: favorites.length,
-                itemBuilder: (context, index) {
-                  final item = favorites[index];
-                  return ListTile(
-                    title: Text(item['title'], style: const TextStyle(color: Colors.white)),
-                    subtitle: Text(item['artist'], style: TextStyle(color: Colors.grey.shade400)),
-                    trailing: IconButton(
-                      icon: const Icon(Icons.play_arrow, color: Colors.greenAccent),
-                      onPressed: () => onPlay(item['url'], item['title'], item['artist'], item['artwork']),
-                    ),
-                  );
-                },
-              );
-            }
-          }
-
-          class LibraryTab extends StatelessWidget {
+          class OfflineLibraryTab extends StatelessWidget {
             final List<Map<String, dynamic>> downloadedSongs;
-            final Function(String, String, String, [String]) onPlay;
+            final Function(String, String, String, [String, bool]) onPlay;
 
-            const LibraryTab({super.key, required this.downloadedSongs, required this.onPlay});
+            const OfflineLibraryTab({super.key, required this.downloadedSongs, required this.onPlay});
 
             @override
             Widget build(BuildContext context) {
-              if (downloadedSongs.isEmpty) {
-                return const Center(child: Text("No offline downloaded songs yet.", style: TextStyle(color: Colors.grey)));
-              }
-              return ListView.builder(
-                itemCount: downloadedSongs.length,
-                itemBuilder: (context, index) {
-                  final song = downloadedSongs[index];
-                  return Card(
-                    color: const Color(0xFF1E1E1E),
-                    child: ListTile(
-                      leading: Image.network(song['artwork'], width: 45, height: 45, fit: BoxFit.cover, errorBuilder: (_,__,___) => const Icon(Icons.music_note)),
-                      title: Text(song['title'], style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-                      subtitle: Text(song['artist'], style: TextStyle(color: Colors.grey.shade400)),
-                      trailing: IconButton(
-                        icon: const Icon(Icons.play_circle_fill, color: Colors.greenAccent, size: 36),
-                        onPressed: () => onPlay(song['url'], song['title'], song['artist'], song['artwork']),
-                      ),
+              return Padding(
+                padding: const EdgeInsets.all(12.0),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text("Offline Music Library", style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white)),
+                    const SizedBox(height: 4),
+                    Text("Play downloaded songs without internet connection", style: TextStyle(fontSize: 12, color: Colors.grey.shade400)),
+                    const SizedBox(height: 10),
+                    Expanded(
+                      child: downloadedSongs.isEmpty
+                          ? const Center(
+                              child: Text("No offline tracks downloaded yet.\nGo to Search and download songs!", 
+                              textAlign: TextAlign.center, style: TextStyle(color: Colors.grey)),
+                            )
+                          : ListView.builder(
+                              itemCount: downloadedSongs.length,
+                              itemBuilder: (context, index) {
+                                final song = downloadedSongs[index];
+                                return Card(
+                                  color: const Color(0xFF1E1E1E),
+                                  child: ListTile(
+                                    leading: const Icon(Icons.offline_pin, color: Colors.greenAccent, size: 32),
+                                    title: Text(song['title'], style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                                    subtitle: Text(song['artist'], style: TextStyle(color: Colors.grey.shade400)),
+                                    trailing: IconButton(
+                                      icon: const Icon(Icons.play_circle_fill, color: Colors.greenAccent, size: 36),
+                                      onPressed: () => onPlay(song['url'], song['title'], song['artist'], song['artwork'], true),
+                                    ),
+                                  ),
+                                );
+                              },
+                            ),
                     ),
-                  );
-                },
+                  ],
+                ),
               );
             }
           }
           EOF
 
-          # Inject Internet Permission into AndroidManifest.xml
           MANIFEST="android/app/src/main/AndroidManifest.xml"
           if [ -f "$MANIFEST" ]; then
             sed -i '/<application/i \    <uses-permission android:name="android.permission.INTERNET"/>' $MANIFEST
@@ -714,7 +681,6 @@ jobs:
             sed -i '/<application/i \    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"/>' $MANIFEST
           fi
 
-          # Update minSdk to 24 for audio plugins
           BUILD_GRADLE="android/app/build.gradle"
           if [ -f "$BUILD_GRADLE" ]; then
             sed -i 's/minSdkVersion flutter.minSdkVersion/minSdkVersion 24/g' $BUILD_GRADLE
@@ -722,4 +688,4 @@ jobs:
           fi
 
           flutter pub get
-          flutter build apk --release#
+          flutter build apk --release
