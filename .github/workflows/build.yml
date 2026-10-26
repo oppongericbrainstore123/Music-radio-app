@@ -23,17 +23,26 @@ jobs:
           flutter-version: '3.19.x'
           channel: 'stable'
 
-      - name: Create Project, Inject Permissions & Build APK
+      - name: Create Project, Inject Files & Build APK
         run: |
           flutter create my_app --org com.musicradio --platforms=android
           
-          # Move user's custom code and pubspec into the build project
-          if [ -f "mobile_app/lib/main.dart" ]; then
-            cp mobile_app/lib/main.dart my_app/lib/main.dart
+          # Automatically find and copy main.dart from anywhere in the repository
+          MAIN_FILE=$(find . -name "main.dart" ! -path "*/my_app/*" | head -n 1)
+          if [ -n "$MAIN_FILE" ]; then
+            cp "$MAIN_FILE" my_app/lib/main.dart
+            echo "Successfully copied $MAIN_FILE"
+          else
+            echo "Warning: main.dart not found!"
           fi
 
-          if [ -f "mobile_app/pubspec.yaml" ]; then
-            cp mobile_app/pubspec.yaml my_app/pubspec.yaml
+          # Automatically find and copy pubspec.yaml from anywhere in the repository
+          PUBSPEC_FILE=$(find . -name "pubspec.yaml" ! -path "*/my_app/*" | head -n 1)
+          if [ -n "$PUBSPEC_FILE" ]; then
+            cp "$PUBSPEC_FILE" my_app/pubspec.yaml
+            echo "Successfully copied $PUBSPEC_FILE"
+          else
+            echo "Warning: pubspec.yaml not found!"
           fi
 
           cd my_app
