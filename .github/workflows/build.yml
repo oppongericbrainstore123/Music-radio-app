@@ -27,22 +27,16 @@ jobs:
         run: |
           flutter create my_app --org com.musicradio --platforms=android
           
-          # Automatically find and copy main.dart from anywhere in the repository
+          # Automatically find and copy main.dart
           MAIN_FILE=$(find . -name "main.dart" ! -path "*/my_app/*" | head -n 1)
           if [ -n "$MAIN_FILE" ]; then
             cp "$MAIN_FILE" my_app/lib/main.dart
-            echo "Successfully copied $MAIN_FILE"
-          else
-            echo "Warning: main.dart not found!"
           fi
 
-          # Automatically find and copy pubspec.yaml from anywhere in the repository
+          # Automatically find and copy pubspec.yaml
           PUBSPEC_FILE=$(find . -name "pubspec.yaml" ! -path "*/my_app/*" | head -n 1)
           if [ -n "$PUBSPEC_FILE" ]; then
             cp "$PUBSPEC_FILE" my_app/pubspec.yaml
-            echo "Successfully copied $PUBSPEC_FILE"
-          else
-            echo "Warning: pubspec.yaml not found!"
           fi
 
           cd my_app
@@ -53,11 +47,13 @@ jobs:
             sed -i '/<application/i \    <uses-permission android:name="android.permission.INTERNET"/>' $MANIFEST
           fi
 
-          # Update minSdk to 21 for audio streaming plugins
+          # Update minSdk to 24 and compileSdk/targetSdk to 34 in build.gradle
           BUILD_GRADLE="android/app/build.gradle"
           if [ -f "$BUILD_GRADLE" ]; then
-            sed -i 's/minSdkVersion flutter.minSdkVersion/minSdkVersion 21/g' $BUILD_GRADLE
-            sed -i 's/minSdk = flutter.minSdkVersion/minSdk = 21/g' $BUILD_GRADLE
+            sed -i 's/minSdkVersion flutter.minSdkVersion/minSdkVersion 24/g' $BUILD_GRADLE
+            sed -i 's/minSdk = flutter.minSdkVersion/minSdk = 24/g' $BUILD_GRADLE
+            sed -i 's/targetSdkVersion.*/targetSdkVersion 34/g' $BUILD_GRADLE
+            sed -i 's/compileSdkVersion.*/compileSdkVersion 34/g' $BUILD_GRADLE
           fi
 
           flutter pub get
