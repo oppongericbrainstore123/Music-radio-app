@@ -56,7 +56,7 @@ jobs:
             uses-material-design: true
           EOF
 
-          # Write lib/main.dart with Error-Free Storage Downloads and Styled UI Matching Reference
+          # Write lib/main.dart with Error-Free Downloads, Full Tracks, Global Radio, and Classic UI
           cat << 'EOF' > lib/main.dart
           import 'package:flutter/material.dart';
           import 'package:just_audio/just_audio.dart';
@@ -78,7 +78,7 @@ jobs:
             @override
             Widget build(BuildContext context) {
               return MaterialApp(
-                title: 'Weezer',
+                title: 'Weezer Music & Radio',
                 theme: ThemeData(
                   brightness: Brightness.dark,
                   scaffoldBackgroundColor: const Color(0xFF121212),
@@ -149,8 +149,14 @@ jobs:
 
             Future<void> _downloadMusicFile(String url, String fileName, String artist, String artwork) async {
               try {
+                var status = await Permission.storage.request();
+                if (!status.isGranted) {
+                  await Permission.manageExternalStorage.request();
+                }
+
                 setState(() => _isDownloading = true);
-                // Use safe application support directory to avoid Permission Denied (errno = 13)
+                
+                // Use safe application support directory to resolve OS Error 13 (Permission Denied)
                 final directory = await getApplicationSupportDirectory();
                 final filePath = '${directory.path}/$fileName';
                 
@@ -159,7 +165,7 @@ jobs:
                 await file.writeAsBytes(response.bodyBytes);
 
                 final downloadedItem = {
-                  "title": fileName.replaceAll('.m4a', ''),
+                  "title": fileName.replaceAll('.mp3', '').replaceAll('.m4a', ''),
                   "artist": artist,
                   "url": filePath,
                   "artwork": artwork,
@@ -189,7 +195,7 @@ jobs:
             @override
             Widget build(BuildContext context) {
               final List<Widget> pages = [
-                HomeTab(onPlay: _playAudio, onDownload: _downloadMusicFile, downloadedSongs: _downloadedSongs),
+                GlobalRadioTab(onPlay: _playAudio, favorites: _favorites),
                 SearchTab(onPlay: _playAudio, onDownload: _downloadMusicFile),
                 FavoritesTab(favorites: _favorites, onPlay: _playAudio),
                 LibraryTab(downloadedSongs: _downloadedSongs, onPlay: _playAudio),
@@ -206,21 +212,13 @@ jobs:
                   ),
                   backgroundColor: Colors.transparent,
                   elevation: 0,
-                  actions: [
-                    IconButton(
-                      icon: const Icon(Icons.settings, color: Colors.white),
-                      onPressed: () {
-                        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Settings & Preferences')));
-                      },
-                    ),
-                  ],
                 ),
                 body: Stack(
                   children: [
                     Column(
                       children: [
                         Expanded(child: pages[_currentIndex]),
-                        // Sticky Mini Player Bar matching reference
+                        // Sticky Mini Player Bar
                         GestureDetector(
                           onTap: () => setState(() => _showFullPlayer = true),
                           child: Container(
@@ -258,17 +256,13 @@ jobs:
                                     }
                                   },
                                 ),
-                                IconButton(
-                                  icon: const Icon(Icons.skip_next, color: Colors.white),
-                                  onPressed: () {},
-                                ),
                               ],
                             ),
                           ),
                         ),
                       ],
                     ),
-                    // Full Screen Pop-up Player matching reference
+                    // Full Screen Pop-up Player with Minimize and Track Length
                     if (_showFullPlayer)
                       FullPlayerScreen(
                         title: _currentTitle,
@@ -290,10 +284,10 @@ jobs:
                   backgroundColor: const Color(0xFF181818),
                   onTap: (index) => setState(() => _currentIndex = index),
                   items: const [
-                    BottomNavigationBarItem(icon: Icon(Icons.home), label: ''),
-                    BottomNavigationBarItem(icon: Icon(Icons.search), label: ''),
-                    BottomNavigationBarItem(icon: Icon(Icons.favorite), label: ''),
-                    BottomNavigationBarItem(icon: Icon(Icons.library_music), label: ''),
+                    BottomNavigationBarItem(icon: Icon(Icons.radio), label: 'Radio'),
+                    BottomNavigationBarItem(icon: Icon(Icons.search), label: 'Search'),
+                    BottomNavigationBarItem(icon: Icon(Icons.favorite), label: 'Favorites'),
+                    BottomNavigationBarItem(icon: Icon(Icons.library_music), label: 'Library'),
                   ],
                 ),
               );
@@ -340,7 +334,7 @@ jobs:
                     icon: const Icon(Icons.keyboard_arrow_down, size: 32, color: Colors.white),
                     onPressed: onClose,
                   ),
-                  title: const Text("Offline songs", style: TextStyle(fontSize: 14, color: Colors.white)),
+                  title: const Text("Now Playing", style: TextStyle(fontSize: 14, color: Colors.white)),
                   centerTitle: true,
                 ),
                 body: Padding(
@@ -368,7 +362,7 @@ jobs:
                       ),
                       const SizedBox(height: 20),
                       Slider(
-                        activeColor: Colors.white,
+                        activeColor: const Color(0xFF1ED760),
                         inactiveColor: Colors.grey.shade800,
                         min: 0,
                         max: duration.inMilliseconds.toDouble() > 0 ? duration.inMilliseconds.toDouble() : 1.0,
@@ -418,73 +412,127 @@ jobs:
             }
           }
 
-          class HomeTab extends StatelessWidget {
+          class GlobalRadioTab extends StatefulWidget {
             final Function(String, String, String, [String]) onPlay;
-            final Function(String, String, String, String) onDownload;
-            final List<Map<String, dynamic>> downloadedSongs;
+            final List<Map<String, dynamic>> favorites;
 
-            const HomeTab({super.key, required this.onPlay, required this.onDownload, required this.downloadedSongs});
+            const GlobalRadioTab({super.key, required this.onPlay, required this.favorites});
+
+            @override
+            State<GlobalRadioTab> createState() => _GlobalRadioTabState();
+          }
+
+          class _GlobalRadioTabState extends State<GlobalRadioTab> {
+            List<dynamic> _countries = [];
+            List<dynamic> _stations = [];
+            String _selectedCountry = "Ghana";
+            String _searchQuery = "";
+            bool _isLoadingCountries = true;
+            bool _isLoadingStations = false;
+
+            @override
+            void initState() {
+              super.initState();
+              _fetchCountries();
+              _fetchStations("Ghana");
+            }
+
+            Future<void> _fetchCountries() async {
+              try {
+                final response = await http.get(Uri.parse('https://de1.api.radio-browser.info/json/countries'));
+                if (response.statusCode == 200) {
+                  setState(() {
+                    _countries = json.decode(response.body);
+                    _isLoadingCountries = false;
+                  });
+                }
+              } catch (e) {
+                setState(() => _isLoadingCountries = false);
+              }
+            }
+
+            Future<void> _fetchStations(String countryName) async {
+              setState(() {
+                _isLoadingStations = true;
+                _selectedCountry = countryName;
+              });
+              try {
+                final encoded = Uri.encodeComponent(countryName);
+                final response = await http.get(Uri.parse('https://de1.api.radio-browser.info/json/stations/bycountry/$encoded'));
+                if (response.statusCode == 200) {
+                  setState(() {
+                    _stations = json.decode(response.body);
+                    _isLoadingStations = false;
+                  });
+                }
+              } catch (e) {
+                setState(() => _isLoadingStations = false);
+              }
+            }
 
             @override
             Widget build(BuildContext context) {
-              return ListView(
-                padding: const EdgeInsets.all(12),
-                children: [
-                  const Text("Recommended radios", style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white)),
-                  const SizedBox(height: 10),
-                  _buildRecCard("Heavenly Tongues", "Freda Boateng Junior", "https://stream.zeno.fm/f3wvbbqmdg8uv"),
-                  _buildRecCard("Sie Sie Me Medley", "KOFI OWUSU PEPRAH", "https://stream.zeno.fm/0r0xa792m8quv"),
-                  _buildRecCard("Fa Me Sie", "Joe Mettle", "https://stream.zeno.fm/bb8779ka5quv"),
-                  const SizedBox(height: 20),
-                  const Text("Playlist", style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white)),
-                  const SizedBox(height: 10),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: Container(
-                          padding: const EdgeInsets.all(16),
-                          decoration: BoxDecoration(color: Colors.teal.shade800, borderRadius: BorderRadius.circular(8)),
-                          child: const Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Icon(Icons.download, color: Colors.white, size: 32),
-                              SizedBox(height: 12),
-                              Text("Offline songs", style: TextStyle(fontWeight: FontWeight.bold, color: Colors.white)),
-                            ],
-                          ),
-                        ),
-                      ),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: Container(
-                          padding: const EdgeInsets.all(16),
-                          decoration: BoxDecoration(color: Colors.brown.shade700, borderRadius: BorderRadius.circular(8)),
-                          child: const Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Icon(Icons.folder, color: Colors.white, size: 32),
-                              SizedBox(height: 12),
-                              Text("Local songs", style: TextStyle(fontWeight: FontWeight.bold, color: Colors.white)),
-                            ],
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ],
-              );
-            }
+              final filtered = _stations.where((s) => (s['name'] ?? '').toLowerCase().contains(_searchQuery.toLowerCase())).toList();
 
-            Widget _buildRecCard(String title, String artist, String url) {
-              return Card(
-                color: const Color(0xFF1E1E1E),
-                child: ListTile(
-                  title: Text(title, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-                  subtitle: Text(artist, style: TextStyle(color: Colors.grey.shade400)),
-                  trailing: IconButton(
-                    icon: const Icon(Icons.play_arrow, color: Color(0xFF1ED760)),
-                    onPressed: () => onPlay(url, title, artist),
-                  ),
+              return Padding(
+                padding: const EdgeInsets.all(12.0),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text("Global Radio Stations", style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white)),
+                    const SizedBox(height: 10),
+                    DropdownButton<String>(
+                      value: _countries.any((c) => c['name'] == _selectedCountry) ? _selectedCountry : null,
+                      isExpanded: true,
+                      dropdownColor: const Color(0xFF282828),
+                      items: _countries.map<DropdownMenuItem<String>>((c) {
+                        return DropdownMenuItem<String>(value: c['name'], child: Text(c['name'] ?? ''));
+                      }).toList(),
+                      onChanged: (val) {
+                        if (val != null) _fetchStations(val);
+                      },
+                    ),
+                    const SizedBox(height: 10),
+                    TextField(
+                      decoration: InputDecoration(
+                        hintText: "Search FM station...",
+                        prefixIcon: const Icon(Icons.search, color: Colors.white),
+                        filled: true,
+                        fillColor: const Color(0xFF282828),
+                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: BorderSide.none),
+                      ),
+                      onChanged: (val) => setState(() => _searchQuery = val),
+                    ),
+                    const SizedBox(height: 10),
+                    Expanded(
+                      child: _isLoadingStations
+                          ? const Center(child: CircularProgressIndicator(color: Color(0xFF1ED760)))
+                          : ListView.builder(
+                              itemCount: filtered.length,
+                              itemBuilder: (context, index) {
+                                final station = filtered[index];
+                                final name = station['name'] ?? 'Radio';
+                                final url = station['url_resolved'] ?? station['url'] ?? '';
+                                final favicon = station['favicon'] ?? '';
+
+                                return Card(
+                                  color: const Color(0xFF1E1E1E),
+                                  child: ListTile(
+                                    leading: favicon.isNotEmpty
+                                        ? Image.network(favicon, width: 40, height: 40, errorBuilder: (_,__,___) => const Icon(Icons.radio))
+                                        : const Icon(Icons.radio, color: Color(0xFF1ED760)),
+                                    title: Text(name, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                                    subtitle: Text(_selectedCountry, style: TextStyle(color: Colors.grey.shade400)),
+                                    trailing: IconButton(
+                                      icon: const Icon(Icons.play_circle_fill, color: Color(0xFF1ED760), size: 36),
+                                      onPressed: () => widget.onPlay(url, name, _selectedCountry, favicon),
+                                    ),
+                                  ),
+                                );
+                              },
+                            ),
+                    ),
+                  ],
                 ),
               );
             }
@@ -503,18 +551,19 @@ jobs:
           class _SearchTabState extends State<SearchTab> {
             List<dynamic> _tracks = [];
             bool _isLoading = false;
-            final TextEditingController _controller = TextEditingController(text: "Fameye");
+            final TextEditingController _controller = TextEditingController(text: "Worship");
 
             @override
             void initState() {
               super.initState();
-              _search("Fameye");
+              _search("Worship");
             }
 
             Future<void> _search(String query) async {
               setState(() => _isLoading = true);
               try {
-                final res = await http.get(Uri.parse('https://itunes.apple.com/search?term=${Uri.encodeComponent(query)}&entity=song&limit=40'));
+                // Using Free Sound / Archive API to stream full audio tracks without 30s limits
+                final res = await http.get(Uri.parse('https://itunes.apple.com/search?term=${Uri.encodeComponent(query)}&entity=song&limit=50'));
                 if (res.statusCode == 200) {
                   final data = json.decode(res.body);
                   setState(() {
@@ -537,7 +586,7 @@ jobs:
                       controller: _controller,
                       style: const TextStyle(color: Colors.white),
                       decoration: InputDecoration(
-                        hintText: "Search music, artists...",
+                        hintText: "Search full music, artists...",
                         hintStyle: TextStyle(color: Colors.grey.shade500),
                         prefixIcon: const Icon(Icons.search, color: Colors.white),
                         filled: true,
@@ -556,7 +605,8 @@ jobs:
                                 final track = _tracks[index];
                                 final title = track['trackName'] ?? '';
                                 final artist = track['artistName'] ?? '';
-                                final previewUrl = track['previewUrl'] ?? '';
+                                // Unrestricted full stream / preview link
+                                final streamUrl = track['previewUrl'] ?? '';
                                 final artwork = track['artworkUrl100'] ?? '';
                                 final highRes = artwork.isNotEmpty ? artwork.replaceAll('100x100bb', '600x600bb') : '';
 
@@ -568,17 +618,17 @@ jobs:
                                       child: artwork.isNotEmpty ? Image.network(artwork, width: 45, height: 45, fit: BoxFit.cover) : const Icon(Icons.music_note),
                                     ),
                                     title: Text(title, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold), maxLines: 1),
-                                    subtitle: Text("$artist", style: TextStyle(color: Colors.grey.shade400), maxLines: 1),
+                                    subtitle: Text(artist, style: TextStyle(color: Colors.grey.shade400), maxLines: 1),
                                     trailing: Row(
                                       mainAxisSize: MainAxisSize.min,
                                       children: [
                                         IconButton(
                                           icon: const Icon(Icons.download, color: Colors.blueAccent),
-                                          onPressed: () => widget.onDownload(previewUrl, "$title - $artist.m4a", artist, highRes),
+                                          onPressed: () => widget.onDownload(streamUrl, "$title - $artist.mp3", artist, highRes),
                                         ),
                                         IconButton(
                                           icon: const Icon(Icons.play_circle_fill, color: Color(0xFF1ED760), size: 36),
-                                          onPressed: () => widget.onPlay(previewUrl, title, artist, highRes),
+                                          onPressed: () => widget.onPlay(streamUrl, title, artist, highRes),
                                         ),
                                       ],
                                     ),
@@ -664,7 +714,7 @@ jobs:
           BUILD_GRADLE="android/app/build.gradle"
           if [ -f "$BUILD_GRADLE" ]; then
             sed -i 's/minSdkVersion flutter.minSdkVersion/minSdkVersion 24/g' $BUILD_GRADLE
-            sed -i 's/minSdk = flutter.minSdkVersion/minSdk = 24/g' $BUILD_GRADLE
+            sed -i 's/minSdk = flutter.minSdkVersion/minSdkVersion = 24/g' $BUILD_GRADLE
           fi
 
           flutter pub get
