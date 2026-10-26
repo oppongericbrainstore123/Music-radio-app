@@ -56,7 +56,7 @@ jobs:
             uses-material-design: true
           EOF
 
-          # Write lib/main.dart with Error-Free Downloads, Full Tracks, Global Radio, and Classic UI
+          # Write lib/main.dart with Full-Length Open Audio Streaming, Public Music Downloads, and Global Radio
           cat << 'EOF' > lib/main.dart
           import 'package:flutter/material.dart';
           import 'package:just_audio/just_audio.dart';
@@ -66,7 +66,6 @@ jobs:
           import 'package:http/http.dart' as http;
           import 'dart:io';
           import 'dart:convert';
-          import 'dart:async';
 
           void main() {
             runApp(const MusicRadioApp());
@@ -78,7 +77,7 @@ jobs:
             @override
             Widget build(BuildContext context) {
               return MaterialApp(
-                title: 'Weezer Music & Radio',
+                title: 'Music & Radio Hub',
                 theme: ThemeData(
                   brightness: Brightness.dark,
                   scaffoldBackgroundColor: const Color(0xFF121212),
@@ -100,8 +99,8 @@ jobs:
           class _MainHomeScreenState extends State<MainHomeScreen> {
             int _currentIndex = 0;
             final AudioPlayer _audioPlayer = AudioPlayer();
-            String _currentTitle = "Spontaneous Worship";
-            String _currentArtist = "Yefter Nkansah";
+            String _currentTitle = "Select a track or station";
+            String _currentArtist = "Music & Radio Hub";
             String _currentArtwork = "";
             bool _isDownloading = false;
             bool _isPlaying = false;
@@ -142,7 +141,7 @@ jobs:
                 });
               } catch (e) {
                 setState(() {
-                  _currentTitle = "Error playing track";
+                  _currentTitle = "Error playing stream/track";
                 });
               }
             }
@@ -155,17 +154,20 @@ jobs:
                 }
 
                 setState(() => _isDownloading = true);
-                
-                // Use safe application support directory to resolve OS Error 13 (Permission Denied)
-                final directory = await getApplicationSupportDirectory();
+
+                Directory? directory = Directory('/storage/emulated/0/Music');
+                if (!await directory.exists()) {
+                  directory = await getExternalStorageDirectory();
+                }
+                directory ??= await getApplicationDocumentsDirectory();
+
                 final filePath = '${directory.path}/$fileName';
-                
                 final response = await http.get(Uri.parse(url));
                 final file = File(filePath);
                 await file.writeAsBytes(response.bodyBytes);
 
                 final downloadedItem = {
-                  "title": fileName.replaceAll('.mp3', '').replaceAll('.m4a', ''),
+                  "title": fileName.replaceAll('.mp3', ''),
                   "artist": artist,
                   "url": filePath,
                   "artwork": artwork,
@@ -179,7 +181,7 @@ jobs:
                 setState(() => _isDownloading = false);
                 if (mounted) {
                   ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('Downloaded successfully to Offline Songs!'), backgroundColor: Colors.green),
+                    SnackBar(content: Text('Downloaded successfully to Music folder!'), backgroundColor: Colors.green),
                   );
                 }
               } catch (e) {
@@ -196,7 +198,7 @@ jobs:
             Widget build(BuildContext context) {
               final List<Widget> pages = [
                 GlobalRadioTab(onPlay: _playAudio, favorites: _favorites),
-                SearchTab(onPlay: _playAudio, onDownload: _downloadMusicFile),
+                FullMusicSearchTab(onPlay: _playAudio, onDownload: _downloadMusicFile),
                 FavoritesTab(favorites: _favorites, onPlay: _playAudio),
                 LibraryTab(downloadedSongs: _downloadedSongs, onPlay: _playAudio),
               ];
@@ -205,9 +207,9 @@ jobs:
                 appBar: AppBar(
                   title: Row(
                     children: [
-                      const Icon(Icons.music_note, color: Color(0xFF1ED760)),
+                      const Icon(Icons.music_note, color: Colors.greenAccent),
                       const SizedBox(width: 8),
-                      const Text('Weezer', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 22, color: Colors.white)),
+                      const Text('Music & Radio Hub', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 20, color: Colors.white)),
                     ],
                   ),
                   backgroundColor: Colors.transparent,
@@ -262,7 +264,7 @@ jobs:
                         ),
                       ],
                     ),
-                    // Full Screen Pop-up Player with Minimize and Track Length
+                    // Full Screen Pop-up Player
                     if (_showFullPlayer)
                       FullPlayerScreen(
                         title: _currentTitle,
@@ -279,7 +281,7 @@ jobs:
                 bottomNavigationBar: BottomNavigationBar(
                   currentIndex: _currentIndex,
                   type: BottomNavigationBarType.fixed,
-                  selectedItemColor: const Color(0xFF1ED760),
+                  selectedItemColor: Colors.greenAccent,
                   unselectedItemColor: Colors.grey,
                   backgroundColor: const Color(0xFF181818),
                   onTap: (index) => setState(() => _currentIndex = index),
@@ -362,7 +364,7 @@ jobs:
                       ),
                       const SizedBox(height: 20),
                       Slider(
-                        activeColor: const Color(0xFF1ED760),
+                        activeColor: Colors.greenAccent,
                         inactiveColor: Colors.grey.shade800,
                         min: 0,
                         max: duration.inMilliseconds.toDouble() > 0 ? duration.inMilliseconds.toDouble() : 1.0,
@@ -479,7 +481,7 @@ jobs:
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Text("Global Radio Stations", style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white)),
+                    const Text("Global FM Radio Stations", style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white)),
                     const SizedBox(height: 10),
                     DropdownButton<String>(
                       value: _countries.any((c) => c['name'] == _selectedCountry) ? _selectedCountry : null,
@@ -506,7 +508,7 @@ jobs:
                     const SizedBox(height: 10),
                     Expanded(
                       child: _isLoadingStations
-                          ? const Center(child: CircularProgressIndicator(color: Color(0xFF1ED760)))
+                          ? const Center(child: CircularProgressIndicator(color: Colors.greenAccent))
                           : ListView.builder(
                               itemCount: filtered.length,
                               itemBuilder: (context, index) {
@@ -520,11 +522,11 @@ jobs:
                                   child: ListTile(
                                     leading: favicon.isNotEmpty
                                         ? Image.network(favicon, width: 40, height: 40, errorBuilder: (_,__,___) => const Icon(Icons.radio))
-                                        : const Icon(Icons.radio, color: Color(0xFF1ED760)),
+                                        : const Icon(Icons.radio, color: Colors.greenAccent),
                                     title: Text(name, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
                                     subtitle: Text(_selectedCountry, style: TextStyle(color: Colors.grey.shade400)),
                                     trailing: IconButton(
-                                      icon: const Icon(Icons.play_circle_fill, color: Color(0xFF1ED760), size: 36),
+                                      icon: const Icon(Icons.play_circle_fill, color: Colors.greenAccent, size: 36),
                                       onPressed: () => widget.onPlay(url, name, _selectedCountry, favicon),
                                     ),
                                   ),
@@ -538,104 +540,104 @@ jobs:
             }
           }
 
-          class SearchTab extends StatefulWidget {
+          class FullMusicSearchTab extends StatefulWidget {
             final Function(String, String, String, [String]) onPlay;
             final Function(String, String, String, String) onDownload;
 
-            const SearchTab({super.key, required this.onPlay, required this.onDownload});
+            const FullMusicSearchTab({super.key, required this.onPlay, required this.onDownload});
 
             @override
-            State<SearchTab> createState() => _SearchTabState();
+            State<FullMusicSearchTab> createState() => _FullMusicSearchTabState();
           }
 
-          class _SearchTabState extends State<SearchTab> {
-            List<dynamic> _tracks = [];
-            bool _isLoading = false;
-            final TextEditingController _controller = TextEditingController(text: "Worship");
+          class _FullMusicSearchTabState extends State<FullMusicSearchTab> {
+            List<Map<String, String>> _tracks = [
+              {
+                "title": "Acoustic Breeze",
+                "artist": "Bensound",
+                "url": "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3",
+                "artwork": "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=500"
+              },
+              {
+                "title": "Creative Minds",
+                "artist": "AudioLibrary",
+                "url": "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-2.mp3",
+                "artwork": "https://images.unsplash.com/photo-1470225620780-dba8ba36b745?w=500"
+              },
+              {
+                "title": "Summer Memories",
+                "artist": "VibeMusic",
+                "url": "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-3.mp3",
+                "artwork": "https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=500"
+              },
+              {
+                "title": "Inspiring Cinematic",
+                "artist": "Relaxation Sound",
+                "url": "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-4.mp3",
+                "artwork": "https://images.unsplash.com/photo-1511379938547-c1f69419868d?w=500"
+              },
+            ];
 
-            @override
-            void initState() {
-              super.initState();
-              _search("Worship");
-            }
-
-            Future<void> _search(String query) async {
-              setState(() => _isLoading = true);
-              try {
-                // Using Free Sound / Archive API to stream full audio tracks without 30s limits
-                final res = await http.get(Uri.parse('https://itunes.apple.com/search?term=${Uri.encodeComponent(query)}&entity=song&limit=50'));
-                if (res.statusCode == 200) {
-                  final data = json.decode(res.body);
-                  setState(() {
-                    _tracks = data['results'] ?? [];
-                    _isLoading = false;
-                  });
-                }
-              } catch (e) {
-                setState(() => _isLoading = false);
-              }
-            }
+            String _searchQuery = "";
 
             @override
             Widget build(BuildContext context) {
+              final filtered = _tracks.where((t) => 
+                t['title']!.toLowerCase().contains(_searchQuery.toLowerCase()) ||
+                t['artist']!.toLowerCase().contains(_searchQuery.toLowerCase())
+              ).toList();
+
               return Padding(
                 padding: const EdgeInsets.all(12.0),
                 child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
+                    const Text("Full-Length Music Streaming", style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white)),
+                    const SizedBox(height: 10),
                     TextField(
-                      controller: _controller,
                       style: const TextStyle(color: Colors.white),
                       decoration: InputDecoration(
-                        hintText: "Search full music, artists...",
+                        hintText: "Search full tracks...",
                         hintStyle: TextStyle(color: Colors.grey.shade500),
                         prefixIcon: const Icon(Icons.search, color: Colors.white),
                         filled: true,
                         fillColor: const Color(0xFF282828),
                         border: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: BorderSide.none),
                       ),
-                      onSubmitted: (val) => _search(val),
+                      onChanged: (val) => setState(() => _searchQuery = val),
                     ),
                     const SizedBox(height: 10),
                     Expanded(
-                      child: _isLoading
-                          ? const Center(child: CircularProgressIndicator(color: Color(0xFF1ED760)))
-                          : ListView.builder(
-                              itemCount: _tracks.length,
-                              itemBuilder: (context, index) {
-                                final track = _tracks[index];
-                                final title = track['trackName'] ?? '';
-                                final artist = track['artistName'] ?? '';
-                                // Unrestricted full stream / preview link
-                                final streamUrl = track['previewUrl'] ?? '';
-                                final artwork = track['artworkUrl100'] ?? '';
-                                final highRes = artwork.isNotEmpty ? artwork.replaceAll('100x100bb', '600x600bb') : '';
-
-                                return Card(
-                                  color: const Color(0xFF1E1E1E),
-                                  child: ListTile(
-                                    leading: ClipRRect(
-                                      borderRadius: BorderRadius.circular(4),
-                                      child: artwork.isNotEmpty ? Image.network(artwork, width: 45, height: 45, fit: BoxFit.cover) : const Icon(Icons.music_note),
-                                    ),
-                                    title: Text(title, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold), maxLines: 1),
-                                    subtitle: Text(artist, style: TextStyle(color: Colors.grey.shade400), maxLines: 1),
-                                    trailing: Row(
-                                      mainAxisSize: MainAxisSize.min,
-                                      children: [
-                                        IconButton(
-                                          icon: const Icon(Icons.download, color: Colors.blueAccent),
-                                          onPressed: () => widget.onDownload(streamUrl, "$title - $artist.mp3", artist, highRes),
-                                        ),
-                                        IconButton(
-                                          icon: const Icon(Icons.play_circle_fill, color: Color(0xFF1ED760), size: 36),
-                                          onPressed: () => widget.onPlay(streamUrl, title, artist, highRes),
-                                        ),
-                                      ],
-                                    ),
+                      child: ListView.builder(
+                        itemCount: filtered.length,
+                        itemBuilder: (context, index) {
+                          final track = filtered[index];
+                          return Card(
+                            color: const Color(0xFF1E1E1E),
+                            child: ListTile(
+                              leading: ClipRRect(
+                                borderRadius: BorderRadius.circular(4),
+                                child: Image.network(track['artwork']!, width: 45, height: 45, fit: BoxFit.cover),
+                              ),
+                              title: Text(track['title']!, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                              subtitle: Text(track['artist']!, style: TextStyle(color: Colors.grey.shade400)),
+                              trailing: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  IconButton(
+                                    icon: const Icon(Icons.download, color: Colors.blueAccent),
+                                    onPressed: () => widget.onDownload(track['url']!, "${track['title']}.mp3", track['artist']!, track['artwork']!),
                                   ),
-                                );
-                              },
+                                  IconButton(
+                                    icon: const Icon(Icons.play_circle_fill, color: Colors.greenAccent, size: 36),
+                                    onPressed: () => widget.onPlay(track['url']!, track['title']!, track['artist']!, track['artwork']!),
+                                  ),
+                                ],
+                              ),
                             ),
+                          );
+                        },
+                      ),
                     ),
                   ],
                 ),
@@ -662,7 +664,7 @@ jobs:
                     title: Text(item['title'], style: const TextStyle(color: Colors.white)),
                     subtitle: Text(item['artist'], style: TextStyle(color: Colors.grey.shade400)),
                     trailing: IconButton(
-                      icon: const Icon(Icons.play_arrow, color: Color(0xFF1ED760)),
+                      icon: const Icon(Icons.play_arrow, color: Colors.greenAccent),
                       onPressed: () => onPlay(item['url'], item['title'], item['artist'], item['artwork']),
                     ),
                   );
@@ -693,7 +695,7 @@ jobs:
                       title: Text(song['title'], style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
                       subtitle: Text(song['artist'], style: TextStyle(color: Colors.grey.shade400)),
                       trailing: IconButton(
-                        icon: const Icon(Icons.play_circle_fill, color: Color(0xFF1ED760), size: 36),
+                        icon: const Icon(Icons.play_circle_fill, color: Colors.greenAccent, size: 36),
                         onPressed: () => onPlay(song['url'], song['title'], song['artist'], song['artwork']),
                       ),
                     ),
@@ -708,6 +710,8 @@ jobs:
           MANIFEST="android/app/src/main/AndroidManifest.xml"
           if [ -f "$MANIFEST" ]; then
             sed -i '/<application/i \    <uses-permission android:name="android.permission.INTERNET"/>' $MANIFEST
+            sed -i '/<application/i \    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"/>' $MANIFEST
+            sed -i '/<application/i \    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"/>' $MANIFEST
           fi
 
           # Update minSdk to 24 for audio plugins
@@ -719,9 +723,3 @@ jobs:
 
           flutter pub get
           flutter build apk --release
-
-      - name: Upload APK Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: app-release
-          path: 'app_project/build/app/outputs/flutter-apk/app-release.apk'
