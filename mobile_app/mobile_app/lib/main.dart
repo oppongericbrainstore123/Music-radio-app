@@ -2,10 +2,14 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:just_audio/just_audio.dart';
+import 'package:file_picker/file_picker.dart';
 
 void main() {
   runApp(const MusicRadioApp());
 }
+
+// Global state for favorites across the app
+List<Map<String, String>> globalFavorites = [];
 
 class MusicRadioApp extends StatelessWidget {
   const MusicRadioApp({super.key});
@@ -13,14 +17,64 @@ class MusicRadioApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Global Radio Hub',
+      title: 'Global Radio & Music Hub',
       theme: ThemeData(
         brightness: Brightness.dark,
         primarySwatch: Colors.deepPurple,
         scaffoldBackgroundColor: const Color(0xFF121212),
       ),
-      home: const CountrySelectionScreen(),
+      home: const MainContainer(),
       debugShowCheckedModeBanner: false,
+    );
+  }
+}
+
+// Main Container with Bottom Navigation Bar
+class MainContainer extends StatefulWidget {
+  const MainContainer({super.key});
+
+  @override
+  State<MainContainer> createState() => _MainContainerState();
+}
+
+class _MainContainerState extends State<MainContainer> {
+  int _currentIndex = 0;
+
+  final List<Widget> _screens = const [
+    CountrySelectionScreen(),
+    FavoritesScreen(),
+    LocalMusicScreen(),
+  ];
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: _screens[_currentIndex],
+      bottomNavigationBar: BottomNavigationBar(
+        currentIndex: _currentIndex,
+        selectedItemColor: Colors.deepPurpleAccent,
+        unselectedItemColor: Colors.grey,
+        backgroundColor: Colors.black54,
+        onTap: (index) {
+          setState(() {
+            _currentIndex = index;
+          });
+        },
+        items: const [
+          BottomNavigationBarItem(
+            icon: Icon(Icons.radio),
+            label: 'Radio',
+          ),
+          BottomNavigationBarItem(
+            icon: Icon(Icons.favorite),
+            label: 'Favorites',
+          ),
+          BottomNavigationBarItem(
+            icon: Icon(Icons.folder_audio),
+            label: 'Local Music',
+          ),
+        ],
+      ),
     );
   }
 }
@@ -48,7 +102,7 @@ class CountrySelectionScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Select Country'),
+        title: const Text('Explore Global Radio'),
         backgroundColor: Colors.transparent,
       ),
       body: ListView.builder(
@@ -138,6 +192,22 @@ class _StationListScreenState extends State<StationListScreen> {
     });
   }
 
+  bool _isFavorite(String name) {
+    return globalFavorites.any((fav) => fav['name'] == name);
+  }
+
+  void _toggleFavorite(Map<String, dynamic> station) {
+    final name = station['name'] ?? 'Unknown';
+    final url = station['url_resolved'] ?? station['url'] ?? '';
+    setState(() {
+      if (_isFavorite(name)) {
+        globalFavorites.removeWhere((fav) => fav['name'] == name);
+      } else {
+        globalFavorites.add({'name': name, 'url': url});
+      }
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -175,29 +245,33 @@ class _StationListScreenState extends State<StationListScreen> {
                           final station = filteredStations[index];
                           final stationName = station['name'] ?? 'Unknown Station';
                           final streamUrl = station['url_resolved'] ?? station['url'] ?? '';
-                          final favicon = station['favicon'] ?? '';
+                          final isFav = _isFavorite(stationName);
 
                           return ListTile(
-                            leading: favicon.isNotEmpty
-                                ? Image.network(
-                                    favicon,
-                                    width: 40,
-                                    height: 40,
-                                    errorBuilder: (context, error, stackTrace) =>
-                                        const Icon(Icons.radio, color: Colors.deepPurpleAccent),
-                                  )
-                                : const Icon(Icons.radio, color: Colors.deepPurpleAccent),
+                            leading: const Icon(Icons.radio, color: Colors.deepPurpleAccent),
                             title: Text(stationName, maxLines: 1, overflow: TextOverflow.ellipsis),
                             subtitle: Text(station['codec'] ?? 'Live FM', style: TextStyle(color: Colors.grey[400])),
-                            trailing: const Icon(Icons.play_circle_fill, color: Colors.deepPurpleAccent, size: 32),
+                            trailing: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                IconButton(
+                                  icon: Icon(
+                                    isFav ? Icons.favorite : Icons.favorite_border,
+                                    color: isFav ? Colors.redAccent : Colors.grey,
+                                  ),
+                                  onPressed: () => _toggleFavorite(station),
+                                ),
+                                const Icon(Icons.play_circle_fill, color: Colors.deepPurpleAccent, size: 28),
+                              ],
+                            ),
                             onTap: () {
                               if (streamUrl.isNotEmpty) {
                                 Navigator.push(
                                   context,
                                   MaterialPageRoute(
                                     builder: (context) => PlayerScreen(
-                                      stationName: stationName,
-                                      streamUrl: streamUrl,
+                                      title: stationName,
+                                      audioUrl: streamUrl,
                                     ),
                                   ),
                                 );
@@ -213,15 +287,149 @@ class _StationListScreenState extends State<StationListScreen> {
   }
 }
 
-// 3. Audio Player Screen
+// 3. Favorites Tab Screen
+class FavoritesScreen extends StatefulWidget {
+  const FavoritesScreen({super.key});
+
+  @override
+  State<FavoritesScreen> createState() => _FavoritesScreenState();
+}
+
+class _FavoritesScreenState extends State<FavoritesScreen> {
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Favorite Stations'),
+        backgroundColor: Colors.transparent,
+      ),
+      body: globalFavorites.isEmpty
+          ? const Center(
+              child: Text(
+                'No favorite stations saved yet.\nTap the heart icon on any station!',
+                textAlign: TextAlign.center,
+                style: TextStyle(color: Colors.grey),
+              ),
+            )
+          : ListView.builder(
+              itemCount: globalFavorites.length,
+              itemBuilder: (context, index) {
+                final fav = globalFavorites[index];
+                return ListTile(
+                  leading: const Icon(Icons.favorite, color: Colors.redAccent),
+                  title: Text(fav['name']!),
+                  trailing: const Icon(Icons.play_circle_fill, color: Colors.deepPurpleAccent, size: 28),
+                  onTap: () {
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (context) => PlayerScreen(
+                          title: fav['name']!,
+                          audioUrl: fav['url']!,
+                        ),
+                      ),
+                    );
+                  },
+                );
+              },
+            ),
+    );
+  }
+}
+
+// 4. Local Music Tab Screen (Device File Picker)
+class LocalMusicScreen extends StatefulWidget {
+  const LocalMusicScreen({super.key});
+
+  @override
+  State<LocalMusicScreen> createState() => _LocalMusicScreenState();
+}
+
+class _LocalMusicScreenState extends State<LocalMusicScreen> {
+  String? filePath;
+  String fileName = 'No file selected';
+
+  Future<void> _pickAudioFile() async {
+    try {
+      FilePickerResult? result = await FilePicker.platform.pickFiles(
+        type: FileType.audio,
+      );
+
+      if (result != null && result.files.single.path != null) {
+        setState(() {
+          filePath = result.files.single.path;
+          fileName = result.files.single.name;
+        });
+
+        if (!mounted) return;
+        Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (context) => PlayerScreen(
+              title: fileName,
+              audioUrl: filePath!,
+              isLocalFile: true,
+            ),
+          ),
+        );
+      }
+    } catch (e) {
+      setState(() {
+        fileName = 'Error picking file';
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Local Device Music'),
+        backgroundColor: Colors.transparent,
+      ),
+      body: Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24.0),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              const Icon(Icons.library_music, size: 100, color: Colors.deepPurpleAccent),
+              const SizedBox(height: 30),
+              const Text(
+                'Play Music From Your Phone Storage',
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 15),
+              ElevatedButton.icon(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.deepPurpleAccent,
+                  padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                ),
+                icon: const Icon(Icons.folder_open, color: Colors.white),
+                label: const Text('Select Audio File', style: TextStyle(fontSize: 16, color: Colors.white)),
+                onPressed: _pickAudioFile,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// 5. Universal Audio Player Screen
 class PlayerScreen extends StatefulWidget {
-  final String stationName;
-  final String streamUrl;
+  final String title;
+  final String audioUrl;
+  final bool isLocalFile;
 
   const PlayerScreen({
     super.key,
-    required this.stationName,
-    required this.streamUrl,
+    required this.title,
+    required this.audioUrl,
+    this.isLocalFile = false,
   });
 
   @override
@@ -242,15 +450,19 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
   Future<void> _startPlaying() async {
     try {
-      await _audioPlayer.setUrl(widget.streamUrl);
+      if (widget.isLocalFile) {
+        await _audioPlayer.setFilePath(widget.audioUrl);
+      } else {
+        await _audioPlayer.setUrl(widget.audioUrl);
+      }
       await _audioPlayer.play();
       setState(() {
         _isPlaying = true;
-        _statusText = 'Live Streaming';
+        _statusText = widget.isLocalFile ? 'Playing Local File' : 'Live Streaming';
       });
     } catch (e) {
       setState(() {
-        _statusText = 'Failed to stream station';
+        _statusText = 'Failed to play audio';
       });
     }
   }
@@ -272,7 +484,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
       await _audioPlayer.play();
       setState(() {
         _isPlaying = true;
-        _statusText = 'Live Streaming';
+        _statusText = widget.isLocalFile ? 'Playing Local File' : 'Live Streaming';
       });
     }
   }
@@ -290,10 +502,14 @@ class _PlayerScreenState extends State<PlayerScreen> {
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              const Icon(Icons.radio, size: 100, color: Colors.deepPurpleAccent),
+              Icon(
+                widget.isLocalFile ? Icons.music_note : Icons.radio,
+                size: 100,
+                color: Colors.deepPurpleAccent,
+              ),
               const SizedBox(height: 30),
               Text(
-                widget.stationName,
+                widget.title,
                 style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
                 textAlign: TextAlign.center,
               ),
