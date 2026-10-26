@@ -23,23 +23,9 @@ jobs:
           flutter-version: '3.19.x'
           channel: 'stable'
 
-      - name: Create Project, Inject Files & Build APK
+      - name: Build APK from mobile_app
         run: |
-          flutter create my_app --org com.musicradio --platforms=android
-          
-          # Automatically find and copy main.dart
-          MAIN_FILE=$(find . -name "main.dart" ! -path "*/my_app/*" | head -n 1)
-          if [ -n "$MAIN_FILE" ]; then
-            cp "$MAIN_FILE" my_app/lib/main.dart
-          fi
-
-          # Automatically find and copy pubspec.yaml
-          PUBSPEC_FILE=$(find . -name "pubspec.yaml" ! -path "*/my_app/*" | head -n 1)
-          if [ -n "$PUBSPEC_FILE" ]; then
-            cp "$PUBSPEC_FILE" my_app/pubspec.yaml
-          fi
-
-          cd my_app
+          cd mobile_app
 
           # Automatically inject Internet Permission into AndroidManifest.xml
           MANIFEST="android/app/src/main/AndroidManifest.xml"
@@ -47,7 +33,7 @@ jobs:
             sed -i '/<application/i \    <uses-permission android:name="android.permission.INTERNET"/>' $MANIFEST
           fi
 
-          # Safely update minSdk to 24 in build.gradle
+          # Update minSdk to 24 in build.gradle
           BUILD_GRADLE="android/app/build.gradle"
           if [ -f "$BUILD_GRADLE" ]; then
             sed -i 's/minSdkVersion flutter.minSdkVersion/minSdkVersion 24/g' $BUILD_GRADLE
@@ -61,4 +47,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: app-release
-          path: '**/build/app/outputs/flutter-apk/app-release.apk'
+          path: 'mobile_app/build/app/outputs/flutter-apk/app-release.apk'
