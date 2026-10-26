@@ -28,15 +28,24 @@ jobs:
           # Create a clean standalone workspace
           flutter create build_workspace --org com.musicradio --platforms=android
 
-          # Safely copy your custom code and pubspec from mobile_app
-          if [ -f "mobile_app/lib/main.dart" ]; then
-            cp mobile_app/lib/main.dart build_workspace/lib/main.dart
-            echo "Copied main.dart successfully"
+          # Copy root lib/ folder into the workspace
+          if [ -d "lib" ]; then
+            rm -rf build_workspace/lib
+            cp -r lib build_workspace/lib
+            echo "Copied root lib/ folder successfully"
+          elif [ -d "mobile_app/lib" ]; then
+            rm -rf build_workspace/lib
+            cp -r mobile_app/lib build_workspace/lib
+            echo "Copied mobile_app/lib folder successfully"
           fi
 
-          if [ -f "mobile_app/pubspec.yaml" ]; then
+          # Copy root pubspec.yaml into the workspace
+          if [ -f "pubspec.yaml" ]; then
+            cp pubspec.yaml build_workspace/pubspec.yaml
+            echo "Copied root pubspec.yaml successfully"
+          elif [ -f "mobile_app/pubspec.yaml" ]; then
             cp mobile_app/pubspec.yaml build_workspace/pubspec.yaml
-            echo "Copied pubspec.yaml successfully"
+            echo "Copied mobile_app/pubspec.yaml successfully"
           fi
 
           cd build_workspace
