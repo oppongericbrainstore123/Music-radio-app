@@ -28,23 +28,23 @@ jobs:
           # Create clean project
           flutter create app_project --org com.musicradio --platforms=android
 
-          # Find and copy main.dart from anywhere in the repo (excluding app_project itself)
+          # Find and copy main.dart from anywhere in the repo
           MAIN_FILE=$(find . -name "main.dart" ! -path "*/app_project/*" | head -n 1)
           if [ -n "$MAIN_FILE" ]; then
             cp "$MAIN_FILE" app_project/lib/main.dart
             echo "Successfully copied main.dart from $MAIN_FILE"
           else
-            echo "ERROR: main.dart not found anywhere in repository!"
+            echo "ERROR: main.dart not found!"
             exit 1
           fi
 
-          # Find and copy pubspec.yaml from anywhere in the repo (excluding app_project itself)
+          # Find and copy pubspec.yaml from anywhere in the repo
           PUBSPEC_FILE=$(find . -name "pubspec.yaml" ! -path "*/app_project/*" | head -n 1)
           if [ -n "$PUBSPEC_FILE" ]; then
             cp "$PUBSPEC_FILE" app_project/pubspec.yaml
             echo "Successfully copied pubspec.yaml from $PUBSPEC_FILE"
           else
-            echo "ERROR: pubspec.yaml not found anywhere in repository!"
+            echo "ERROR: pubspec.yaml not found!"
             exit 1
           fi
 
@@ -60,11 +60,11 @@ jobs:
           BUILD_GRADLE="android/app/build.gradle"
           if [ -f "$BUILD_GRADLE" ]; then
             sed -i 's/minSdkVersion flutter.minSdkVersion/minSdkVersion 24/g' $BUILD_GRADLE
-            sed -i 's/minSdk = flutter.minSdkVersion/minSdkVersion 24/g' $BUILD_GRADLE
+            sed -i 's/minSdk = flutter.minSdkVersion/minSdk = 24/g' $BUILD_GRADLE
           fi
 
           flutter pub get
-          flutter build apk --release
+          flutter build apk --release --verbose
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
