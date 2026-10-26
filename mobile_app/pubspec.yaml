@@ -10,7 +10,6 @@ dependencies:
   flutter:
     sdk: flutter
   just_audio: ^0.9.36
-  http: ^1.2.0
 
 flutter:
   uses-material-design: true
