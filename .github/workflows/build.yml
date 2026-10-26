@@ -28,20 +28,23 @@ jobs:
           # Create clean project
           flutter create app_project --org com.musicradio --platforms=android
 
-          # Explicitly copy your custom code from mobile_app folder
-          if [ -f "mobile_app/lib/main.dart" ]; then
-            cp mobile_app/lib/main.dart app_project/lib/main.dart
-            echo "Successfully copied mobile_app/lib/main.dart"
+          # Find and copy main.dart from anywhere in the repo (excluding app_project itself)
+          MAIN_FILE=$(find . -name "main.dart" ! -path "*/app_project/*" | head -n 1)
+          if [ -n "$MAIN_FILE" ]; then
+            cp "$MAIN_FILE" app_project/lib/main.dart
+            echo "Successfully copied main.dart from $MAIN_FILE"
           else
-            echo "ERROR: mobile_app/lib/main.dart not found!"
+            echo "ERROR: main.dart not found anywhere in repository!"
             exit 1
           fi
 
-          if [ -f "mobile_app/pubspec.yaml" ]; then
-            cp mobile_app/pubspec.yaml app_project/pubspec.yaml
-            echo "Successfully copied mobile_app/pubspec.yaml"
+          # Find and copy pubspec.yaml from anywhere in the repo (excluding app_project itself)
+          PUBSPEC_FILE=$(find . -name "pubspec.yaml" ! -path "*/app_project/*" | head -n 1)
+          if [ -n "$PUBSPEC_FILE" ]; then
+            cp "$PUBSPEC_FILE" app_project/pubspec.yaml
+            echo "Successfully copied pubspec.yaml from $PUBSPEC_FILE"
           else
-            echo "ERROR: mobile_app/pubspec.yaml not found!"
+            echo "ERROR: pubspec.yaml not found anywhere in repository!"
             exit 1
           fi
 
@@ -57,7 +60,7 @@ jobs:
           BUILD_GRADLE="android/app/build.gradle"
           if [ -f "$BUILD_GRADLE" ]; then
             sed -i 's/minSdkVersion flutter.minSdkVersion/minSdkVersion 24/g' $BUILD_GRADLE
-            sed -i 's/minSdk = flutter.minSdkVersion/minSdk = 24/g' $BUILD_GRADLE
+            sed -i 's/minSdk = flutter.minSdkVersion/minSdkVersion 24/g' $BUILD_GRADLE
           fi
 
           flutter pub get
