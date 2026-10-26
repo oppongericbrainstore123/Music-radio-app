@@ -47,13 +47,11 @@ jobs:
             sed -i '/<application/i \    <uses-permission android:name="android.permission.INTERNET"/>' $MANIFEST
           fi
 
-          # Update minSdk to 24 and compileSdk/targetSdk to 34 in build.gradle
+          # Safely update minSdk to 24 in build.gradle
           BUILD_GRADLE="android/app/build.gradle"
           if [ -f "$BUILD_GRADLE" ]; then
             sed -i 's/minSdkVersion flutter.minSdkVersion/minSdkVersion 24/g' $BUILD_GRADLE
             sed -i 's/minSdk = flutter.minSdkVersion/minSdk = 24/g' $BUILD_GRADLE
-            sed -i 's/targetSdkVersion.*/targetSdkVersion 34/g' $BUILD_GRADLE
-            sed -i 's/compileSdkVersion.*/compileSdkVersion 34/g' $BUILD_GRADLE
           fi
 
           flutter pub get
