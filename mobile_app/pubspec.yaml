@@ -1,5 +1,5 @@
 name: music_radio_app
-description: A complete streaming, download, and global FM radio application.
+description: Global FM Radio and Streaming Application.
 publish_to: 'none'
 version: 1.0.0+1
 
@@ -10,6 +10,7 @@ dependencies:
   flutter:
     sdk: flutter
   just_audio: ^0.9.36
+  http: ^1.2.0
 
 flutter:
   uses-material-design: true
