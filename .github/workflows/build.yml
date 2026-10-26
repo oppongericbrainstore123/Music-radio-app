@@ -56,7 +56,7 @@ jobs:
             uses-material-design: true
           EOF
 
-          # Write lib/main.dart with Equalizer, Sleep Timer, History, and Dark Theme
+          # Write lib/main.dart with Full Screen Pop-up Player, Track Details, and Unrestricted Streams
           cat << 'EOF' > lib/main.dart
           import 'package:flutter/material.dart';
           import 'package:just_audio/just_audio.dart';
@@ -72,21 +72,8 @@ jobs:
             runApp(const MusicRadioApp());
           }
 
-          class MusicRadioApp extends StatefulWidget {
+          class MusicRadioApp extends StatelessWidget {
             const MusicRadioApp({super.key});
-
-            @override
-            State<MusicRadioApp> createState() => _MusicRadioAppState();
-          }
-
-          class _MusicRadioAppState extends State<MusicRadioApp> {
-            bool _isDarkMode = false;
-
-            void _toggleTheme() {
-              setState(() {
-                _isDarkMode = !_isDarkMode;
-              });
-            }
 
             @override
             Widget build(BuildContext context) {
@@ -104,17 +91,14 @@ jobs:
                   brightness: Brightness.dark,
                   colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple, brightness: Brightness.dark),
                 ),
-                themeMode: _isDarkMode ? ThemeMode.dark : ThemeMode.light,
-                home: MainHomeScreen(onToggleTheme: _toggleTheme, isDarkMode: _isDarkMode),
+                themeMode: ThemeMode.dark, // Default to sleek dark theme like reference
+                home: const MainHomeScreen(),
               );
             }
           }
 
           class MainHomeScreen extends StatefulWidget {
-            final VoidCallback onToggleTheme;
-            final bool isDarkMode;
-
-            const MainHomeScreen({super.key, required this.onToggleTheme, required this.isDarkMode});
+            const MainHomeScreen({super.key});
 
             @override
             State<MainHomeScreen> createState() => _MainHomeScreenState();
@@ -123,13 +107,27 @@ jobs:
           class _MainHomeScreenState extends State<MainHomeScreen> {
             int _currentIndex = 0;
             final AudioPlayer _audioPlayer = AudioPlayer();
-            String _nowPlaying = "Nothing playing";
+            String _currentTitle = "Nothing playing";
+            String _currentArtist = "Select a track or station";
             String _currentArtwork = "";
+            String _currentUrl = "";
             bool _isDownloading = false;
+            bool _isPlaying = false;
+            bool _showFullPlayer = false;
             final List<Map<String, dynamic>> _favorites = [];
             final List<Map<String, dynamic>> _history = [];
             Timer? _sleepTimer;
             String _activePreset = "Normal";
+
+            @override
+            void initState() {
+              super.initState();
+              _audioPlayer.playerStateStream.listen((state) {
+                setState(() {
+                  _isPlaying = state.playing;
+                });
+              });
+            }
 
             @override
             void dispose() {
@@ -138,24 +136,26 @@ jobs:
               super.dispose();
             }
 
-            Future<void> _playAudio(String url, String title, [String artwork = ""]) async {
+            Future<void> _playAudio(String url, String title, String artist, [String artwork = ""]) async {
               try {
+                _currentUrl = url;
                 await _audioPlayer.setUrl(url);
                 await _audioPlayer.play();
                 setState(() {
-                  _nowPlaying = title;
+                  _currentTitle = title;
+                  _currentArtist = artist;
                   _currentArtwork = artwork;
                 });
 
-                // Add to history
-                final historyItem = {"title": title, "url": url, "artwork": artwork};
+                final historyItem = {"title": title, "artist": artist, "url": url, "artwork": artwork};
                 if (!_history.any((h) => h['title'] == title)) {
                   _history.insert(0, historyItem);
                   if (_history.length > 25) _history.removeLast();
                 }
               } catch (e) {
                 setState(() {
-                  _nowPlaying = "Error playing audio";
+                  _currentTitle = "Error playing audio";
+                  _currentArtist = "";
                 });
               }
             }
@@ -192,7 +192,7 @@ jobs:
 
                 if (mounted) {
                   ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('Downloaded successfully to Phone Music folder!'), backgroundColor: Colors.green),
+                    const SnackBar(content: Text('Downloaded successfully to Music folder!'), backgroundColor: Colors.green),
                   );
                 }
               } catch (e) {
@@ -221,76 +221,6 @@ jobs:
               });
             }
 
-            void _setSleepTimer(int minutes) {
-              _sleepTimer?.cancel();
-              if (minutes > 0) {
-                _sleepTimer = Timer(Duration(minutes: minutes), () {
-                  _audioPlayer.pause();
-                  if (mounted) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text('Sleep timer reached. Audio paused.')),
-                    );
-                  }
-                });
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(content: Text('Sleep timer set for $minutes minutes.')),
-                );
-              } else {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('Sleep timer cancelled.')),
-                );
-              }
-            }
-
-            void _showEqualizerDialog() {
-              showDialog(
-                context: context,
-                builder: (context) {
-                  return AlertDialog(
-                    title: const Text("Audio Equalizer & Presets"),
-                    content: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: ["Normal", "Bass Boost", "Pop", "Rock", "Classical", "Vocal"].map((preset) {
-                        return RadioListTile<String>(
-                          title: Text(preset),
-                          value: preset,
-                          groupValue: _activePreset,
-                          onChanged: (val) {
-                            setState(() => _activePreset = val ?? "Normal");
-                            Navigator.pop(context);
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              SnackBar(content: Text('Equalizer preset applied: $_activePreset')),
-                            );
-                          },
-                        );
-                      }).toList(),
-                    ),
-                  );
-                },
-              );
-            }
-
-            void _showSleepTimerDialog() {
-              showDialog(
-                context: context,
-                builder: (context) {
-                  return AlertDialog(
-                    title: const Text("Sleep Timer"),
-                    content: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        ListTile(title: const Text("15 Minutes"), onTap: () { _setSleepTimer(15); Navigator.pop(context); }),
-                        ListTile(title: const Text("30 Minutes"), onTap: () { _setSleepTimer(30); Navigator.pop(context); }),
-                        ListTile(title: const Text("45 Minutes"), onTap: () { _setSleepTimer(45); Navigator.pop(context); }),
-                        ListTile(title: const Text("60 Minutes"), onTap: () { _setSleepTimer(60); Navigator.pop(context); }),
-                        ListTile(title: const Text("Cancel Timer"), onTap: () { _setSleepTimer(0); Navigator.pop(context); }),
-                      ],
-                    ),
-                  );
-                },
-              );
-            }
-
             @override
             Widget build(BuildContext context) {
               final List<Widget> pages = [
@@ -304,77 +234,85 @@ jobs:
               return Scaffold(
                 appBar: AppBar(
                   title: const Text('Music & Radio Hub', style: TextStyle(fontWeight: FontWeight.bold)),
-                  backgroundColor: Colors.deepPurple.shade100,
+                  backgroundColor: Colors.deepPurple.shade900,
                   elevation: 2,
-                  actions: [
-                    IconButton(
-                      icon: const Icon(Icons.equalizer),
-                      tooltip: 'Equalizer',
-                      onPressed: _showEqualizerDialog,
-                    ),
-                    IconButton(
-                      icon: const Icon(Icons.bedtime),
-                      tooltip: 'Sleep Timer',
-                      onPressed: _showSleepTimerDialog,
-                    ),
-                    IconButton(
-                      icon: Icon(widget.isDarkMode ? Icons.light_mode : Icons.dark_mode),
-                      tooltip: 'Toggle Theme',
-                      onPressed: widget.onToggleTheme,
-                    ),
-                  ],
                 ),
-                body: Column(
+                body: Stack(
                   children: [
-                    Expanded(child: pages[_currentIndex]),
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-                      color: Colors.deepPurple.shade50.withOpacity(widget.isDarkMode ? 0.1 : 1.0),
-                      child: Row(
-                        children: [
-                          ClipRRect(
-                            borderRadius: BorderRadius.circular(6),
-                            child: _currentArtwork.isNotEmpty
-                                ? Image.network(_currentArtwork, width: 40, height: 40, fit: BoxFit.cover, errorBuilder: (_,__,___) => const Icon(Icons.music_note))
-                                : Container(
-                                    width: 40,
-                                    height: 40,
-                                    color: Colors.deepPurple,
-                                    child: const Icon(Icons.music_note, color: Colors.white),
-                                  ),
-                          ),
-                          const SizedBox(width: 12),
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
+                    Column(
+                      children: [
+                        Expanded(child: pages[_currentIndex]),
+                        // Mini Player Bar
+                        GestureDetector(
+                          onTap: () => setState(() => _showFullPlayer = true),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                            color: Colors.grey.shade900,
+                            child: Row(
                               children: [
-                                Text("NOW PLAYING ($_activePreset)", style: const TextStyle(fontSize: 9, fontWeight: FontWeight.bold, color: Colors.deepPurple)),
-                                Text(
-                                  _isDownloading ? "Downloading to Music folder..." : _nowPlaying,
-                                  style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
-                                  overflow: TextOverflow.ellipsis,
+                                ClipRRect(
+                                  borderRadius: BorderRadius.circular(6),
+                                  child: _currentArtwork.isNotEmpty
+                                      ? Image.network(_currentArtwork, width: 45, height: 45, fit: BoxFit.cover, errorBuilder: (_,__,___) => const Icon(Icons.music_note))
+                                      : Container(
+                                          width: 45,
+                                          height: 45,
+                                          color: Colors.deepPurple,
+                                          child: const Icon(Icons.music_note, color: Colors.white),
+                                        ),
+                                ),
+                                const SizedBox(width: 12),
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        _isDownloading ? "Downloading..." : _currentTitle,
+                                        style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14, color: Colors.white),
+                                        overflow: TextOverflow.ellipsis,
+                                      ),
+                                      Text(
+                                        _currentArtist,
+                                        style: TextStyle(fontSize: 12, color: Colors.grey.shade400),
+                                        overflow: TextOverflow.ellipsis,
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                                IconButton(
+                                  icon: Icon(_isPlaying ? Icons.pause : Icons.play_arrow, color: Colors.white, size: 28),
+                                  onPressed: () {
+                                    if (_isPlaying) {
+                                      _audioPlayer.pause();
+                                    } else {
+                                      _audioPlayer.play();
+                                    }
+                                  },
                                 ),
                               ],
                             ),
                           ),
-                          IconButton(
-                            icon: const Icon(Icons.pause, color: Colors.deepPurple),
-                            onPressed: () => _audioPlayer.pause(),
-                          ),
-                          IconButton(
-                            icon: const Icon(Icons.play_arrow, color: Colors.deepPurple, size: 30),
-                            onPressed: () => _audioPlayer.play(),
-                          ),
-                        ],
-                      ),
+                        ),
+                      ],
                     ),
+                    // Full Screen Pop-up Player Overlay
+                    if (_showFullPlayer)
+                      FullPlayerScreen(
+                        title: _currentTitle,
+                        artist: _currentArtist,
+                        artwork: _currentArtwork,
+                        isPlaying: _isPlaying,
+                        audioPlayer: _audioPlayer,
+                        onClose: () => setState(() => _showFullPlayer = false),
+                      ),
                   ],
                 ),
                 bottomNavigationBar: BottomNavigationBar(
                   currentIndex: _currentIndex,
                   type: BottomNavigationBarType.fixed,
-                  selectedItemColor: Colors.deepPurple,
+                  selectedItemColor: Colors.deepPurpleAccent,
                   unselectedItemColor: Colors.grey,
+                  backgroundColor: Colors.black87,
                   onTap: (index) => setState(() => _currentIndex = index),
                   items: const [
                     BottomNavigationBarItem(icon: Icon(Icons.radio), label: 'Radio'),
@@ -388,8 +326,115 @@ jobs:
             }
           }
 
+          class FullPlayerScreen extends StatelessWidget {
+            final String title;
+            final String artist;
+            final String artwork;
+            final bool isPlaying;
+            final AudioPlayer audioPlayer;
+            final VoidCallback onClose;
+
+            const FullPlayerScreen({
+              super.key,
+              required this.title,
+              required this.artist,
+              required this.artwork,
+              required this.isPlaying,
+              required this.audioPlayer,
+              required this.onClose,
+            });
+
+            @override
+            Widget build(BuildContext context) {
+              return Scaffold(
+                backgroundColor: Colors.grey.shade900,
+                appBar: AppBar(
+                  backgroundColor: Colors.transparent,
+                  elevation: 0,
+                  leading: IconButton(
+                    icon: const Icon(Icons.keyboard_arrow_down, size: 32, color: Colors.white),
+                    onPressed: onClose,
+                  ),
+                  title: const Text("Now Playing", style: TextStyle(fontSize: 16, color: Colors.white)),
+                  centerTitle: true,
+                ),
+                body: Padding(
+                  padding: const EdgeInsets.all(24.0),
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      ClipRRect(
+                        borderRadius: BorderRadius.circular(16),
+                        child: artwork.isNotEmpty
+                            ? Image.network(artwork, width: 280, height: 280, fit: BoxFit.cover, errorBuilder: (_,__,___) => const Icon(Icons.music_note, size: 100))
+                            : Container(
+                                width: 280,
+                                height: 280,
+                                color: Colors.deepPurple,
+                                child: const Icon(Icons.music_note, size: 100, color: Colors.white),
+                              ),
+                      ),
+                      const SizedBox(height: 40),
+                      Text(
+                        title,
+                        style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Colors.white),
+                        textAlign: TextAlign.center,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        artist,
+                        style: TextStyle(fontSize: 16, color: Colors.grey.shade400),
+                        textAlign: TextAlign.center,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      const SizedBox(height: 40),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          IconButton(
+                            icon: const Icon(Icons.replay_10, size: 36, color: Colors.white),
+                            onPressed: () {
+                              final newPos = audioPlayer.position - const Duration(seconds: 10);
+                              audioPlayer.seek(newPos < Duration.zero ? Duration.zero : newPos);
+                            },
+                          ),
+                          const SizedBox(width: 24),
+                          CircleAvatar(
+                            radius: 36,
+                            backgroundColor: Colors.white,
+                            child: IconButton(
+                              icon: Icon(isPlaying ? Icons.pause : Icons.play_arrow, size: 40, color: Colors.black),
+                              onPressed: () {
+                                if (isPlaying) {
+                                  audioPlayer.pause();
+                                } else {
+                                  audioPlayer.play();
+                                }
+                              },
+                            ),
+                          ),
+                          const SizedBox(width: 24),
+                          IconButton(
+                            icon: const Icon(Icons.forward_10, size: 36, color: Colors.white),
+                            onPressed: () {
+                              final newPos = audioPlayer.position + const Duration(seconds: 10);
+                              audioPlayer.seek(newPos);
+                            },
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+              );
+            }
+          }
+
           class GlobalRadioTab extends StatefulWidget {
-            final Function(String, String, [String]) onPlay;
+            final Function(String, String, String, [String]) onPlay;
             final List<Map<String, dynamic>> favorites;
             final Function(Map<String, dynamic>) onToggleFavorite;
 
@@ -468,7 +513,7 @@ jobs:
                         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
                         child: Row(
                           children: [
-                            const Icon(Icons.public, color: Colors.deepPurple),
+                            const Icon(Icons.public, color: Colors.deepPurpleAccent),
                             const SizedBox(width: 12),
                             const Text("Country:", style: TextStyle(fontWeight: FontWeight.bold)),
                             const SizedBox(width: 12),
@@ -502,7 +547,7 @@ jobs:
                     TextField(
                       decoration: InputDecoration(
                         labelText: "Search FM station or genre...",
-                        prefixIcon: const Icon(Icons.search, color: Colors.deepPurple),
+                        prefixIcon: const Icon(Icons.search, color: Colors.deepPurpleAccent),
                         border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
                         filled: true,
                       ),
@@ -525,7 +570,7 @@ jobs:
                                     
                                     final itemData = {
                                       "title": name,
-                                      "subtitle": tags,
+                                      "artist": _selectedCountry,
                                       "url": url,
                                       "type": "radio",
                                       "artwork": favicon
@@ -548,15 +593,15 @@ jobs:
                                                   errorBuilder: (context, error, stackTrace) => Container(
                                                     width: 45,
                                                     height: 45,
-                                                    color: Colors.deepPurple.shade100,
-                                                    child: const Icon(Icons.radio, color: Colors.deepPurple),
+                                                    color: Colors.deepPurple.shade900,
+                                                    child: const Icon(Icons.radio, color: Colors.white),
                                                   ),
                                                 )
                                               : Container(
                                                   width: 45,
                                                   height: 45,
-                                                  color: Colors.deepPurple.shade100,
-                                                  child: const Icon(Icons.radio, color: Colors.deepPurple),
+                                                  color: Colors.deepPurple.shade900,
+                                                  child: const Icon(Icons.radio, color: Colors.white),
                                                 ),
                                         ),
                                         title: Text(name, style: const TextStyle(fontWeight: FontWeight.bold)),
@@ -569,8 +614,8 @@ jobs:
                                               onPressed: () => widget.onToggleFavorite(itemData),
                                             ),
                                             IconButton(
-                                              icon: const Icon(Icons.play_circle_fill, color: Colors.deepPurple, size: 36),
-                                              onPressed: () => widget.onPlay(url, name, favicon),
+                                              icon: const Icon(Icons.play_circle_fill, color: Colors.deepPurpleAccent, size: 36),
+                                              onPressed: () => widget.onPlay(url, name, _selectedCountry, favicon),
                                             ),
                                           ],
                                         ),
@@ -586,7 +631,7 @@ jobs:
           }
 
           class OnlineMusicTab extends StatefulWidget {
-            final Function(String, String, [String]) onPlay;
+            final Function(String, String, String, [String]) onPlay;
             final Function(String, String) onDownload;
             final List<Map<String, dynamic>> favorites;
             final Function(Map<String, dynamic>) onToggleFavorite;
@@ -606,12 +651,12 @@ jobs:
           class _OnlineMusicTabState extends State<OnlineMusicTab> {
             List<dynamic> _tracks = [];
             bool _isLoading = false;
-            final TextEditingController _searchController = TextEditingController(text: "Black Sherif");
+            final TextEditingController _searchController = TextEditingController(text: "Worship");
 
             @override
             void initState() {
               super.initState();
-              _searchMusic("Black Sherif");
+              _searchMusic("Worship");
             }
 
             Future<void> _searchMusic(String query) async {
@@ -642,9 +687,9 @@ jobs:
                       controller: _searchController,
                       decoration: InputDecoration(
                         labelText: "Search any song, artist, or album worldwide...",
-                        prefixIcon: const Icon(Icons.search, color: Colors.deepPurple),
+                        prefixIcon: const Icon(Icons.search, color: Colors.deepPurpleAccent),
                         suffixIcon: IconButton(
-                          icon: const Icon(Icons.send, color: Colors.deepPurple),
+                          icon: const Icon(Icons.send, color: Colors.deepPurpleAccent),
                           onPressed: () => _searchMusic(_searchController.text),
                         ),
                         border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
@@ -657,7 +702,7 @@ jobs:
                       child: _isLoading
                           ? const Center(child: CircularProgressIndicator())
                           : _tracks.isEmpty
-                              ? const Center(child: Text("No songs or albums found. Try another search."))
+                              ? const Center(child: Text("No songs found. Try another search."))
                               : ListView.builder(
                                   itemCount: _tracks.length,
                                   itemBuilder: (context, index) {
@@ -667,13 +712,15 @@ jobs:
                                     final album = track['collectionName'] ?? 'Single';
                                     final previewUrl = track['previewUrl'] ?? '';
                                     final artwork = track['artworkUrl100'] ?? '';
+                                    // High-res artwork upgrade
+                                    final highResArtwork = artwork.isNotEmpty ? artwork.replaceAll('100x100bb', '600x600bb') : '';
 
                                     final itemData = {
                                       "title": title,
-                                      "subtitle": "$artist • $album",
+                                      "artist": artist,
                                       "url": previewUrl,
                                       "type": "music",
-                                      "artwork": artwork
+                                      "artwork": highResArtwork
                                     };
                                     final isFav = widget.favorites.any((f) => f['title'] == title);
 
@@ -689,8 +736,8 @@ jobs:
                                               : Container(
                                                   width: 45,
                                                   height: 45,
-                                                  color: Colors.deepPurple.shade100,
-                                                  child: const Icon(Icons.music_note, color: Colors.deepPurple),
+                                                  color: Colors.deepPurple.shade900,
+                                                  child: const Icon(Icons.music_note, color: Colors.white),
                                                 ),
                                         ),
                                         title: Text(title, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.bold)),
@@ -703,15 +750,15 @@ jobs:
                                               onPressed: () => widget.onToggleFavorite(itemData),
                                             ),
                                             IconButton(
-                                              icon: const Icon(Icons.download, color: Colors.blue),
+                                              icon: const Icon(Icons.download, color: Colors.blueAccent),
                                               onPressed: previewUrl.isNotEmpty
                                                   ? () => widget.onDownload(previewUrl, "$title - $artist.m4a")
                                                   : null,
                                             ),
                                             IconButton(
-                                              icon: const Icon(Icons.play_circle_fill, color: Colors.deepPurple, size: 36),
+                                              icon: const Icon(Icons.play_circle_fill, color: Colors.deepPurpleAccent, size: 36),
                                               onPressed: previewUrl.isNotEmpty
-                                                  ? () => widget.onPlay(previewUrl, title, artwork)
+                                                  ? () => widget.onPlay(previewUrl, title, artist, highResArtwork)
                                                   : null,
                                             ),
                                           ],
@@ -729,7 +776,7 @@ jobs:
 
           class FavoritesTab extends StatelessWidget {
             final List<Map<String, dynamic>> favorites;
-            final Function(String, String, [String]) onPlay;
+            final Function(String, String, String, [String]) onPlay;
 
             const FavoritesTab({super.key, required this.favorites, required this.onPlay});
 
@@ -751,10 +798,10 @@ jobs:
                           ? Image.network(item['artwork'], width: 45, height: 45, fit: BoxFit.cover, errorBuilder: (_,__,___) => const Icon(Icons.star))
                           : const CircleAvatar(child: Icon(Icons.star)),
                       title: Text(item['title'] ?? '', style: const TextStyle(fontWeight: FontWeight.bold)),
-                      subtitle: Text(item['subtitle'] ?? '', maxLines: 1, overflow: TextOverflow.ellipsis),
+                      subtitle: Text(item['artist'] ?? '', maxLines: 1, overflow: TextOverflow.ellipsis),
                       trailing: IconButton(
-                        icon: const Icon(Icons.play_circle_fill, color: Colors.deepPurple, size: 36),
-                        onPressed: () => onPlay(item['url'], item['title'], item['artwork'] ?? ''),
+                        icon: const Icon(Icons.play_circle_fill, color: Colors.deepPurpleAccent, size: 36),
+                        onPressed: () => onPlay(item['url'], item['title'], item['artist'] ?? '', item['artwork'] ?? ''),
                       ),
                     ),
                   );
@@ -765,7 +812,7 @@ jobs:
 
           class HistoryTab extends StatelessWidget {
             final List<Map<String, dynamic>> history;
-            final Function(String, String, [String]) onPlay;
+            final Function(String, String, String, [String]) onPlay;
 
             const HistoryTab({super.key, required this.history, required this.onPlay});
 
@@ -787,9 +834,10 @@ jobs:
                           ? Image.network(item['artwork'], width: 45, height: 45, fit: BoxFit.cover, errorBuilder: (_,__,___) => const Icon(Icons.history))
                           : const CircleAvatar(child: Icon(Icons.history)),
                       title: Text(item['title'] ?? '', style: const TextStyle(fontWeight: FontWeight.bold)),
+                      subtitle: Text(item['artist'] ?? '', maxLines: 1, overflow: TextOverflow.ellipsis),
                       trailing: IconButton(
-                        icon: const Icon(Icons.play_circle_fill, color: Colors.deepPurple, size: 36),
-                        onPressed: () => onPlay(item['url'], item['title'], item['artwork'] ?? ''),
+                        icon: const Icon(Icons.play_circle_fill, color: Colors.deepPurpleAccent, size: 36),
+                        onPressed: () => onPlay(item['url'], item['title'], item['artist'] ?? '', item['artwork'] ?? ''),
                       ),
                     ),
                   );
@@ -799,7 +847,7 @@ jobs:
           }
 
           class LocalFileTab extends StatelessWidget {
-            final Function(String, String, [String]) onPlay;
+            final Function(String, String, String, [String]) onPlay;
 
             const LocalFileTab({super.key, required this.onPlay});
 
@@ -811,7 +859,7 @@ jobs:
                   child: Column(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
-                      const Icon(Icons.folder_shared, size: 64, color: Colors.deepPurple),
+                      const Icon(Icons.folder_shared, size: 64, color: Colors.deepPurpleAccent),
                       const SizedBox(height: 16),
                       const Text(
                         "Downloaded music is saved directly to your device's Music folder!",
@@ -823,12 +871,12 @@ jobs:
                         onPressed: () async {
                           FilePickerResult? result = await FilePicker.platform.pickFiles(type: FileType.audio);
                           if (result != null && result.files.single.path != null) {
-                            onPlay(result.files.single.path!, result.files.single.name);
+                            onPlay(result.files.single.path!, result.files.single.name, "Local Storage");
                           }
                         },
                         icon: const Icon(Icons.folder_open),
                         label: const Text("Pick File from Device Music Folder"),
-                        style: ElevatedButton.styleFrom(backgroundColor: Colors.deepPurple.shade100),
+                        style: ElevatedButton.styleFrom(backgroundColor: Colors.deepPurple.shade900),
                       ),
                     ],
                   ),
@@ -850,7 +898,7 @@ jobs:
           BUILD_GRADLE="android/app/build.gradle"
           if [ -f "$BUILD_GRADLE" ]; then
             sed -i 's/minSdkVersion flutter.minSdkVersion/minSdkVersion 24/g' $BUILD_GRADLE
-            sed -i 's/minSdk = flutter.minSdkVersion/minSdkVersion 24/g' $BUILD_GRADLE
+            sed -i 's/minSdk = flutter.minSdkVersion/minSdk = 24/g' $BUILD_GRADLE
           fi
 
           flutter pub get
