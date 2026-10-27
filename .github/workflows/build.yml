@@ -26,6 +26,9 @@ jobs:
           cache: true
 
       - name: Generate and Build App
+        env:
+          SPOTIFY_CLIENT_ID: ${{ secrets.SPOTIFY_CLIENT_ID }}
+          JAMENDO_CLIENT_ID: ${{ secrets.JAMENDO_CLIENT_ID }}
         run: |
           flutter create app_project --org com.musicradio --platforms=android
           cd app_project
@@ -47,6 +50,9 @@ jobs:
             http: ^1.2.0
             path_provider: ^2.1.2
             shared_preferences: ^2.2.2
+            flutter_appauth: ^6.0.2
+            on_audio_query: ^2.9.0
+            speech_to_text: ^6.6.0
 
           dev_dependencies:
             flutter_test:
@@ -62,17 +68,29 @@ jobs:
           import 'dart:io';
 
           import 'package:flutter/material.dart';
+          import 'package:flutter_appauth/flutter_appauth.dart';
+          import 'package:flutter_appauth/flutter_appauth.dart';
           import 'package:http/http.dart' as http;
           import 'package:just_audio/just_audio.dart';
           import 'package:just_audio_background/just_audio_background.dart';
+          import 'package:on_audio_query/on_audio_query.dart';
           import 'package:path_provider/path_provider.dart';
           import 'package:shared_preferences/shared_preferences.dart';
+          import 'package:speech_to_text/speech_to_text.dart' as stt;
 
           const String kAppName = 'MusicRadioHub';
           const String kApiBase = 'https://api.audius.co/v1';
+          const String kJamendoId = String.fromEnvironment('JAMENDO_CLIENT_ID');
+          const String kJamendoBase = 'https://api.jamendo.com/v3.0';
+          const String kJamendoId = String.fromEnvironment('JAMENDO_CLIENT_ID');
+          const String kSpotifyId = String.fromEnvironment('SPOTIFY_CLIENT_ID');
+          const String kSpotifyRedirect = 'com.musicradio.app://callback';
 
           final GlobalKey<ScaffoldMessengerState> messengerKey = GlobalKey<ScaffoldMessengerState>();
           final PlayerController player = PlayerController();
+          final SpotifyService spotify = SpotifyService();
+          final FollowService follows = FollowService();
+          final SpotifyService spotify = SpotifyService();
 
           void toast(String message) {
             messengerKey.currentState
@@ -102,7 +120,10 @@ jobs:
             }
             final body = json.decode(res.body);
             if (body is List) return body;
-            final d = body['data'];
+            if (body is Map && body['headers'] is Map && body['headers']['status'] == 'failed') {
+              throw 'API error';
+            }
+            final d = (body is Map) ? (body['data'] ?? body['results']) : null;
             return d is List ? d : <dynamic>[];
           }
 
@@ -113,11 +134,28 @@ jobs:
               androidNotificationChannelName: 'Audio playback',
               androidNotificationOngoing: true,
             );
+            await spotify.init();
+            await follows.init();
             await player.init();
             runApp(const MusicRadioApp());
           }
 
           // ---------------------------------------------------------------- models
+
+          String spImg(dynamic images) {
+            if (images is List && images.isNotEmpty) {
+              final m = images[images.length > 1 ? 1 : 0];
+              if (m is Map) return (m['url'] ?? '').toString();
+            }
+            return '';
+          }
+
+          Uri jamendoUri(String path, Map<String, String> q) => Uri.https('api.jamendo.com', '/v3.0$path', {
+                'client_id': kJamendoId,
+                'format': 'json',
+                'audioformat': 'mp32',
+                ...q,
+              });
 
           class Track {
             final String id;
@@ -127,6 +165,8 @@ jobs:
             final String artwork;
             final bool isLocal;
             final bool isLive;
+            final bool isSpotify;
+            final bool canDownload;
 
             const Track({
               required this.id,
@@ -136,6 +176,8 @@ jobs:
               this.artwork = '',
               this.isLocal = false,
               this.isLive = false,
+              this.isSpotify = false,
+              this.canDownload = true,
             });
 
             Map<String, dynamic> toJson() => {
@@ -146,6 +188,8 @@ jobs:
                   'artwork': artwork,
                   'isLocal': isLocal,
                   'isLive': isLive,
+                  'isSpotify': isSpotify,
+                  'canDownload': canDownload,
                 };
 
             factory Track.fromJson(Map<String, dynamic> j) => Track(
@@ -156,6 +200,8 @@ jobs:
                   artwork: (j['artwork'] ?? '').toString(),
                   isLocal: j['isLocal'] == true,
                   isLive: j['isLive'] == true,
+                  isSpotify: j['isSpotify'] == true,
+                  canDownload: j['canDownload'] != false,
                 );
 
             factory Track.fromAudius(Map<String, dynamic> j) {
@@ -169,12 +215,253 @@ jobs:
                 artwork: imgOf(j['artwork']),
               );
             }
+
+            factory Track.fromJamendo(Map<String, dynamic> j, {String artist = '', String image = ''}) {
+              return Track(
+                id: 'jm-${j['id']}',
+                title: (j['name'] ?? 'Untitled').toString(),
+                artist: (j['artist_name'] ?? artist).toString(),
+                url: (j['audio'] ?? '').toString(),
+                artwork: (j['image'] ?? j['album_image'] ?? image).toString(),
+                canDownload: j['audiodownload_allowed'] != false,
+              );
+            }
+
+            factory Track.fromSpotify(Map<String, dynamic> j, {String image = ''}) {
+              final artists = j['artists'];
+              final album = j['album'];
+              return Track(
+                id: 'sp-${j['id']}',
+                title: (j['name'] ?? 'Untitled').toString(),
+                artist: (artists is List && artists.isNotEmpty && artists.first is Map) ? (artists.first['name'] ?? '').toString() : '',
+                url: (j['uri'] ?? '').toString(),
+                artwork: album is Map ? spImg(album['images']) : image,
+                isSpotify: true,
+                canDownload: false,
+              );
+            }
+          }
+
+          List<Track> audiusTracks(List<dynamic> list) => list
+              .where((j) => j is Map && j['is_streamable'] != false)
+              .map((j) => Track.fromAudius(Map<String, dynamic>.from(j as Map)))
+              .toList();
+
+          List<Track> jamendoTracks(List<dynamic> list, {String artist = '', String image = ''}) => list
+              .whereType<Map>()
+              .map((j) => Track.fromJamendo(Map<String, dynamic>.from(j), artist: artist, image: image))
+              .where((t) => t.url.isNotEmpty)
+              .toList();
+
+          // ---------------------------------------------------------------- spotify
+
+          class SpotifyService extends ChangeNotifier {
+            static const String clientId = String.fromEnvironment('SPOTIFY_CLIENT_ID');
+            static const String redirect = 'com.musicradio.app://callback';
+            static const List<String> scopes = [
+              'user-modify-playback-state',
+              'user-read-playback-state',
+              'user-read-currently-playing',
+            ];
+
+            final FlutterAppAuth _auth = FlutterAppAuth();
+            final AuthorizationServiceConfiguration _config = AuthorizationServiceConfiguration(
+              authorizationEndpoint: 'https://accounts.spotify.com/authorize',
+              tokenEndpoint: 'https://accounts.spotify.com/api/token',
+            );
+
+            SharedPreferences? _prefs;
+            String? _access;
+            String? _refresh;
+            DateTime? _expiry;
+
+            bool get configured => clientId.isNotEmpty;
+            bool get loggedIn => _refresh != null;
+
+            Future<void> init() async {
+              _prefs = await SharedPreferences.getInstance();
+              _refresh = _prefs?.getString('sp_refresh');
+            }
+
+            Future<void> login() async {
+              if (!configured) {
+                toast('Spotify is not configured in this build');
+                return;
+              }
+              try {
+                final r = await _auth.authorizeAndExchangeCode(
+                  AuthorizationTokenRequest(clientId, redirect, serviceConfiguration: _config, scopes: scopes),
+                );
+                if (r == null || r.refreshToken == null) {
+                  toast('Spotify login was cancelled');
+                  return;
+                }
+                _access = r.accessToken;
+                _expiry = r.accessTokenExpirationDateTime;
+                _refresh = r.refreshToken;
+                await _prefs?.setString('sp_refresh', _refresh!);
+                notifyListeners();
+                toast('Logged in to Spotify');
+              } catch (e) {
+                toast('Spotify login failed');
+              }
+            }
+
+            Future<void> logout() async {
+              _access = null;
+              _refresh = null;
+              _expiry = null;
+              await _prefs?.remove('sp_refresh');
+              notifyListeners();
+            }
+
+            Future<String?> token() async {
+              if (_refresh == null) return null;
+              if (_access != null && _expiry != null && DateTime.now().isBefore(_expiry!.subtract(const Duration(minutes: 1)))) {
+                return _access;
+              }
+              try {
+                final r = await _auth.token(TokenRequest(clientId, redirect, refreshToken: _refresh, serviceConfiguration: _config, scopes: scopes));
+                if (r == null || r.accessToken == null) return null;
+                _access = r.accessToken;
+                _expiry = r.accessTokenExpirationDateTime;
+                if (r.refreshToken != null) {
+                  _refresh = r.refreshToken;
+                  await _prefs?.setString('sp_refresh', _refresh!);
+                }
+                return _access;
+              } catch (_) {
+                return null;
+              }
+            }
+
+            Future<http.Response?> _send(String method, String path, {Map<String, String>? query, Object? body}) async {
+              final tok = await token();
+              if (tok == null) return null;
+              final uri = Uri.https('api.spotify.com', '/v1$path', query);
+              final headers = {'Authorization': 'Bearer $tok', 'Content-Type': 'application/json'};
+              final enc = body == null ? null : json.encode(body);
+              const timeout = Duration(seconds: 20);
+              switch (method) {
+                case 'PUT':
+                  return http.put(uri, headers: headers, body: enc).timeout(timeout);
+                case 'POST':
+                  return http.post(uri, headers: headers, body: enc).timeout(timeout);
+                default:
+                  return http.get(uri, headers: headers).timeout(timeout);
+              }
+            }
+
+            Future<Map<String, dynamic>> getJson(String path, [Map<String, String>? query]) async {
+              final res = await _send('GET', path, query: query);
+              if (res == null) throw 'Not logged in';
+              if (res.statusCode != 200) throw 'Spotify error ${res.statusCode}';
+              return Map<String, dynamic>.from(json.decode(res.body) as Map);
+            }
+
+            /// Returns null on success, otherwise a message for the user.
+            Future<String?> play(List<String> uris) async {
+              http.Response? res = await _send('PUT', '/me/player/play', body: {'uris': uris});
+              if (res == null) return 'Log in to Spotify first';
+              if (res.statusCode == 404) {
+                final dev = await _send('GET', '/me/player/devices');
+                if (dev != null && dev.statusCode == 200) {
+                  final list = (json.decode(dev.body)['devices'] as List?) ?? [];
+                  if (list.isNotEmpty) {
+                    res = await _send('PUT', '/me/player/play', query: {'device_id': list.first['id'].toString()}, body: {'uris': uris});
+                  }
+                }
+              }
+              if (res == null) return 'Spotify request failed';
+              final code = res.statusCode;
+              if (code == 200 || code == 202 || code == 204) return null;
+              if (code == 403) return 'Spotify Premium is required for playback';
+              if (code == 404) return 'Open the Spotify app on this phone once, then try again';
+              if (code == 429) return 'Spotify rate limit reached, try again soon';
+              return 'Spotify error $code';
+            }
+
+            Future<void> cmd(String method, String path, {Map<String, String>? query}) async {
+              try {
+                await _send(method, path, query: query);
+              } catch (_) {}
+            }
+
+            Future<Map<String, dynamic>?> state() async {
+              try {
+                final res = await _send('GET', '/me/player');
+                if (res == null || res.statusCode != 200) return null;
+                return Map<String, dynamic>.from(json.decode(res.body) as Map);
+              } catch (_) {
+                return null;
+              }
+            }
+          }
+
+          // ---------------------------------------------------------------- following
+
+          class FollowedArtist {
+            final String source;
+            final String id;
+            final String name;
+            final String image;
+            const FollowedArtist({required this.source, required this.id, required this.name, this.image = ''});
+
+            Map<String, dynamic> toJson() => {'source': source, 'id': id, 'name': name, 'image': image};
+            factory FollowedArtist.fromJson(Map<String, dynamic> j) => FollowedArtist(
+                  source: (j['source'] ?? 'audius').toString(),
+                  id: (j['id'] ?? '').toString(),
+                  name: (j['name'] ?? '').toString(),
+                  image: (j['image'] ?? '').toString(),
+                );
+          }
+
+          class FollowService extends ChangeNotifier {
+            List<FollowedArtist> artists = [];
+            SharedPreferences? _prefs;
+
+            Future<void> init() async {
+              _prefs = await SharedPreferences.getInstance();
+              final raw = _prefs?.getString('followed');
+              if (raw != null) {
+                try {
+                  artists = (json.decode(raw) as List).map((e) => FollowedArtist.fromJson(Map<String, dynamic>.from(e as Map))).toList();
+                } catch (_) {}
+              }
+            }
+
+            bool isFollowing(FollowedArtist a) => artists.any((x) => x.source == a.source && x.id == a.id);
+
+            Future<void> toggle(FollowedArtist a) async {
+              if (isFollowing(a)) {
+                artists.removeWhere((x) => x.source == a.source && x.id == a.id);
+              } else {
+                artists.add(a);
+              }
+              notifyListeners();
+              await _prefs?.setString('followed', json.encode(artists.map((x) => x.toJson()).toList()));
+            }
+          }
+
+          Future<List<Track>> loadArtistTracks(FollowedArtist a) async {
+            if (a.source == 'jamendo') {
+              final r = await getList(jamendoUri('/artists/tracks/', {'id': a.id}));
+              if (r.isEmpty || r.first is! Map) return <Track>[];
+              final tr = ((r.first as Map)['tracks'] as List?) ?? [];
+              return jamendoTracks(tr, artist: a.name, image: a.image);
+            }
+            final r = await getList(Uri.parse('$kApiBase/users/${a.id}/tracks').replace(queryParameters: {'app_name': kAppName, 'limit': '100'}));
+            return audiusTracks(r);
           }
 
           // ---------------------------------------------------------------- controller
 
           class PlayerController extends ChangeNotifier {
-            final AudioPlayer audio = AudioPlayer();
+            final AndroidEqualizer equalizer = AndroidEqualizer();
+            final AndroidLoudnessEnhancer loudness = AndroidLoudnessEnhancer();
+            late final AudioPlayer audio = AudioPlayer(
+              audioPipeline: AudioPipeline(androidAudioEffects: [loudness, equalizer]),
+            );
             List<Track> queue = [];
             int index = 0;
             List<Track> favorites = [];
@@ -186,6 +473,13 @@ jobs:
             Timer? _sleepTimer;
             SharedPreferences? _prefs;
 
+            // Spotify mode: playback happens in the Spotify app, we remote-control it.
+            bool spotifyActive = false;
+            bool spotifyPlaying = false;
+            Duration spPos = Duration.zero;
+            Duration spDur = Duration.zero;
+            Timer? _spPoll;
+
             Track? get current => (queue.isNotEmpty && index >= 0 && index < queue.length) ? queue[index] : null;
             bool isFavorite(Track t) => favorites.any((f) => f.id == t.id);
             bool isDownloaded(Track t) => downloads.any((d) => d.id == t.id);
@@ -195,7 +489,7 @@ jobs:
               favorites = _load('favorites');
               downloads = _load('downloads').where((t) => File(t.url).existsSync()).toList();
               audio.currentIndexStream.listen((i) {
-                if (i != null && i != index) {
+                if (!spotifyActive && i != null && i != index) {
                   index = i;
                   notifyListeners();
                 }
@@ -218,13 +512,21 @@ jobs:
             }
 
             Future<void> playQueue(List<Track> tracks, int start) async {
-              if (tracks.isEmpty) return;
-              final resolved = tracks.map((t) {
+              if (tracks.isEmpty || start < 0 || start >= tracks.length) return;
+              final first = tracks[start];
+              final same = tracks.where((t) => t.isSpotify == first.isSpotify).toList();
+              final s = same.indexWhere((t) => t.id == first.id);
+              if (first.isSpotify) {
+                await _playSpotify(same.skip(s).take(100).toList());
+                return;
+              }
+              await _stopSpotify();
+              final resolved = same.map((t) {
                 final local = downloads.where((d) => d.id == t.id);
                 return local.isNotEmpty ? local.first : t;
               }).toList();
               queue = resolved;
-              index = start;
+              index = s;
               notifyListeners();
               try {
                 final sources = <AudioSource>[];
@@ -240,12 +542,104 @@ jobs:
                     ),
                   ));
                 }
-                await audio.setAudioSource(ConcatenatingAudioSource(children: sources), initialIndex: start);
+                await audio.setAudioSource(ConcatenatingAudioSource(children: sources), initialIndex: s);
                 await audio.setSpeed(speed);
                 audio.play();
               } catch (e) {
                 toast('Could not play this item');
               }
+            }
+
+            Future<void> _playSpotify(List<Track> list) async {
+              await audio.pause();
+              queue = list;
+              index = 0;
+              spotifyActive = true;
+              spotifyPlaying = false;
+              spPos = Duration.zero;
+              spDur = Duration.zero;
+              notifyListeners();
+              final err = await spotify.play(list.map((t) => t.url).toList());
+              if (err != null) {
+                spotifyActive = false;
+                toast(err);
+                notifyListeners();
+                return;
+              }
+              spotifyPlaying = true;
+              notifyListeners();
+              _spPoll?.cancel();
+              _spPoll = Timer.periodic(const Duration(seconds: 3), (_) => _poll());
+            }
+
+            Future<void> _poll() async {
+              if (!spotifyActive) return;
+              final st = await spotify.state();
+              if (st == null || !spotifyActive) return;
+              spotifyPlaying = st['is_playing'] == true;
+              spPos = Duration(milliseconds: (st['progress_ms'] as num?)?.toInt() ?? 0);
+              final item = st['item'];
+              if (item is Map) {
+                spDur = Duration(milliseconds: (item['duration_ms'] as num?)?.toInt() ?? 0);
+                final i = queue.indexWhere((t) => t.url == item['uri']);
+                if (i >= 0) index = i;
+              }
+              notifyListeners();
+            }
+
+            Future<void> _stopSpotify() async {
+              if (!spotifyActive) return;
+              spotifyActive = false;
+              spotifyPlaying = false;
+              _spPoll?.cancel();
+              await spotify.cmd('PUT', '/me/player/pause');
+            }
+
+            Future<void> togglePlay() async {
+              if (spotifyActive) {
+                if (spotifyPlaying) {
+                  spotifyPlaying = false;
+                  notifyListeners();
+                  await spotify.cmd('PUT', '/me/player/pause');
+                } else {
+                  spotifyPlaying = true;
+                  notifyListeners();
+                  await spotify.cmd('PUT', '/me/player/play');
+                }
+              } else if (audio.playing) {
+                await audio.pause();
+              } else {
+                audio.play();
+              }
+            }
+
+            Future<void> next() async {
+              if (spotifyActive) {
+                await spotify.cmd('POST', '/me/player/next');
+                await Future.delayed(const Duration(milliseconds: 800));
+                await _poll();
+              } else {
+                await audio.seekToNext();
+              }
+            }
+
+            Future<void> previous() async {
+              if (spotifyActive) {
+                await spotify.cmd('POST', '/me/player/previous');
+                await Future.delayed(const Duration(milliseconds: 800));
+                await _poll();
+              } else {
+                await audio.seekToPrevious();
+              }
+            }
+
+            Future<void> pauseAll() async {
+              await audio.pause();
+              if (spotifyActive) {
+                spotifyPlaying = false;
+                await spotify.cmd('PUT', '/me/player/pause');
+              }
+              notifyListeners();
             }
 
             Future<void> toggleFavorite(Track t) async {
@@ -259,7 +653,11 @@ jobs:
             }
 
             Future<void> download(Track t) async {
-              if (t.isLive || isDownloaded(t)) return;
+              if (t.isLive || t.isSpotify || !t.canDownload) {
+                toast('This item can only be streamed');
+                return;
+              }
+              if (isDownloaded(t)) return;
               toast('Downloading "${t.title}"...');
               try {
                 final base = await getExternalStorageDirectory() ?? await getApplicationDocumentsDirectory();
@@ -298,14 +696,23 @@ jobs:
 
             Future<void> toggleShuffle() async {
               shuffle = !shuffle;
-              if (shuffle) await audio.shuffle();
-              await audio.setShuffleModeEnabled(shuffle);
+              if (spotifyActive) {
+                await spotify.cmd('PUT', '/me/player/shuffle', query: {'state': '$shuffle'});
+              } else {
+                if (shuffle) await audio.shuffle();
+                await audio.setShuffleModeEnabled(shuffle);
+              }
               notifyListeners();
             }
 
             Future<void> cycleLoop() async {
               loop = loop == LoopMode.off ? LoopMode.all : (loop == LoopMode.all ? LoopMode.one : LoopMode.off);
-              await audio.setLoopMode(loop);
+              if (spotifyActive) {
+                final state = loop == LoopMode.off ? 'off' : (loop == LoopMode.all ? 'context' : 'track');
+                await spotify.cmd('PUT', '/me/player/repeat', query: {'state': state});
+              } else {
+                await audio.setLoopMode(loop);
+              }
               notifyListeners();
             }
 
@@ -321,9 +728,8 @@ jobs:
               if (minutes > 0) {
                 sleepEnd = DateTime.now().add(Duration(minutes: minutes));
                 _sleepTimer = Timer(Duration(minutes: minutes), () {
-                  audio.pause();
                   sleepEnd = null;
-                  notifyListeners();
+                  pauseAll();
                 });
                 toast('Sleep timer: $minutes min');
               } else {
@@ -364,6 +770,8 @@ jobs:
 
           class _HomeScreenState extends State<HomeScreen> {
             int _tab = 0;
+            final Set<int> _visited = {0};
+            static const List<Widget> _pages = [RadioTab(), DiscoverTab(), SearchTab(), LocalTab(), LibraryTab()];
 
             @override
             Widget build(BuildContext context) {
@@ -382,7 +790,7 @@ jobs:
                     Expanded(
                       child: IndexedStack(
                         index: _tab,
-                        children: const [RadioTab(), SearchTab(), LibraryTab()],
+                        children: [for (var i = 0; i < _pages.length; i++) _visited.contains(i) ? _pages[i] : const SizedBox.shrink()],
                       ),
                     ),
                     const MiniPlayer(),
@@ -390,10 +798,15 @@ jobs:
                 ),
                 bottomNavigationBar: NavigationBar(
                   selectedIndex: _tab,
-                  onDestinationSelected: (i) => setState(() => _tab = i),
+                  onDestinationSelected: (i) => setState(() {
+                    _tab = i;
+                    _visited.add(i);
+                  }),
                   destinations: const [
                     NavigationDestination(icon: Icon(Icons.radio), label: 'Radio'),
-                    NavigationDestination(icon: Icon(Icons.search), label: 'Music'),
+                    NavigationDestination(icon: Icon(Icons.explore), label: 'Discover'),
+                    NavigationDestination(icon: Icon(Icons.search), label: 'Search'),
+                    NavigationDestination(icon: Icon(Icons.phone_android), label: 'Device'),
                     NavigationDestination(icon: Icon(Icons.library_music), label: 'Library'),
                   ],
                 ),
@@ -431,28 +844,34 @@ jobs:
 
             @override
             Widget build(BuildContext context) {
-              return StreamBuilder<PlayerState>(
-                stream: player.audio.playerStateStream,
-                builder: (context, snap) {
-                  final st = snap.data;
-                  final loading = st?.processingState == ProcessingState.loading || st?.processingState == ProcessingState.buffering;
-                  final playing = st?.playing ?? false;
-                  if (loading) {
-                    return SizedBox(
-                      width: size + 16,
-                      height: size + 16,
-                      child: const Padding(padding: EdgeInsets.all(12), child: CircularProgressIndicator(strokeWidth: 3)),
+              return AnimatedBuilder(
+                animation: player,
+                builder: (context, _) {
+                  if (player.spotifyActive) {
+                    return IconButton(
+                      iconSize: size,
+                      icon: Icon(player.spotifyPlaying ? Icons.pause_circle_filled : Icons.play_circle_filled),
+                      onPressed: player.togglePlay,
                     );
                   }
-                  return IconButton(
-                    iconSize: size,
-                    icon: Icon(playing ? Icons.pause_circle_filled : Icons.play_circle_filled),
-                    onPressed: () {
-                      if (playing) {
-                        player.audio.pause();
-                      } else {
-                        player.audio.play();
+                  return StreamBuilder<PlayerState>(
+                    stream: player.audio.playerStateStream,
+                    builder: (context, snap) {
+                      final st = snap.data;
+                      final loading = st?.processingState == ProcessingState.loading || st?.processingState == ProcessingState.buffering;
+                      final playing = st?.playing ?? false;
+                      if (loading) {
+                        return SizedBox(
+                          width: size + 16,
+                          height: size + 16,
+                          child: const Padding(padding: EdgeInsets.all(12), child: CircularProgressIndicator(strokeWidth: 3)),
+                        );
                       }
+                      return IconButton(
+                        iconSize: size,
+                        icon: Icon(playing ? Icons.pause_circle_filled : Icons.play_circle_filled),
+                        onPressed: player.togglePlay,
+                      );
                     },
                   );
                 },
@@ -487,7 +906,7 @@ jobs:
                         ),
                         if (downloadsMode)
                           IconButton(icon: const Icon(Icons.delete_outline), onPressed: () => player.removeDownload(track))
-                        else if (!track.isLive)
+                        else if (!track.isLive && !track.isSpotify && track.canDownload)
                           IconButton(
                             icon: Icon(dl ? Icons.download_done : Icons.download, color: dl ? Colors.greenAccent : null),
                             onPressed: dl ? null : () => player.download(track),
@@ -529,9 +948,9 @@ jobs:
                                 ],
                               ),
                             ),
-                            IconButton(icon: const Icon(Icons.skip_previous), onPressed: () => player.audio.seekToPrevious()),
+                            IconButton(icon: const Icon(Icons.skip_previous), onPressed: player.previous),
                             const PlayPauseButton(size: 32),
-                            IconButton(icon: const Icon(Icons.skip_next), onPressed: () => player.audio.seekToNext()),
+                            IconButton(icon: const Icon(Icons.skip_next), onPressed: player.next),
                           ],
                         ),
                       ),
@@ -556,14 +975,22 @@ jobs:
                   if (t == null) {
                     return Scaffold(appBar: AppBar(), body: const Center(child: Text('Nothing playing')));
                   }
+                  final sp = player.spotifyActive;
                   final fav = player.isFavorite(t);
                   final dl = player.isDownloaded(t);
+                  final canDl = !t.isLive && !t.isSpotify && t.canDownload;
                   return Scaffold(
                     appBar: AppBar(
                       leading: IconButton(icon: const Icon(Icons.keyboard_arrow_down, size: 32), onPressed: () => Navigator.of(context).pop()),
                       title: const Text('Now Playing', style: TextStyle(fontSize: 14)),
                       centerTitle: true,
                       actions: [
+                        if (!sp)
+                          IconButton(
+                            icon: const Icon(Icons.equalizer),
+                            tooltip: 'Sound Studio',
+                            onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const EqualizerScreen())),
+                          ),
                         IconButton(icon: const Icon(Icons.queue_music), onPressed: () => _showQueue(context)),
                       ],
                     ),
@@ -572,7 +999,12 @@ jobs:
                       child: Column(
                         children: [
                           Art(url: t.artwork, size: 260),
-                          const SizedBox(height: 20),
+                          if (sp)
+                            const Padding(
+                              padding: EdgeInsets.only(top: 12),
+                              child: Chip(avatar: Icon(Icons.graphic_eq, size: 18), label: Text('Playing through Spotify')),
+                            ),
+                          const SizedBox(height: 16),
                           Align(
                             alignment: Alignment.centerLeft,
                             child: Column(
@@ -593,9 +1025,9 @@ jobs:
                                 icon: Icon(Icons.shuffle, color: player.shuffle ? Colors.greenAccent : null),
                                 onPressed: player.toggleShuffle,
                               ),
-                              IconButton(iconSize: 36, icon: const Icon(Icons.skip_previous), onPressed: () => player.audio.seekToPrevious()),
+                              IconButton(iconSize: 36, icon: const Icon(Icons.skip_previous), onPressed: player.previous),
                               const PlayPauseButton(size: 64),
-                              IconButton(iconSize: 36, icon: const Icon(Icons.skip_next), onPressed: () => player.audio.seekToNext()),
+                              IconButton(iconSize: 36, icon: const Icon(Icons.skip_next), onPressed: player.next),
                               IconButton(
                                 icon: Icon(player.loop == LoopMode.one ? Icons.repeat_one : Icons.repeat, color: player.loop != LoopMode.off ? Colors.greenAccent : null),
                                 onPressed: player.cycleLoop,
@@ -610,17 +1042,18 @@ jobs:
                                 icon: Icon(fav ? Icons.favorite : Icons.favorite_border, color: fav ? Colors.redAccent : null),
                                 onPressed: () => player.toggleFavorite(t),
                               ),
-                              if (!t.isLive)
+                              if (canDl)
                                 IconButton(
                                   icon: Icon(dl ? Icons.download_done : Icons.download, color: dl ? Colors.greenAccent : null),
                                   onPressed: dl ? null : () => player.download(t),
                                 ),
-                              PopupMenuButton<double>(
-                                icon: Icon(Icons.speed, color: player.speed != 1.0 ? Colors.greenAccent : null),
-                                tooltip: 'Playback speed',
-                                onSelected: player.setSpeed,
-                                itemBuilder: (_) => [0.5, 0.75, 1.0, 1.25, 1.5, 2.0].map((s) => PopupMenuItem<double>(value: s, child: Text('${s}x'))).toList(),
-                              ),
+                              if (!sp)
+                                PopupMenuButton<double>(
+                                  icon: Icon(Icons.speed, color: player.speed != 1.0 ? Colors.greenAccent : null),
+                                  tooltip: 'Playback speed',
+                                  onSelected: player.setSpeed,
+                                  itemBuilder: (_) => [0.5, 0.75, 1.0, 1.25, 1.5, 2.0].map((s) => PopupMenuItem<double>(value: s, child: Text('${s}x'))).toList(),
+                                ),
                               PopupMenuButton<int>(
                                 icon: Icon(Icons.bedtime, color: player.sleepEnd != null ? Colors.greenAccent : null),
                                 tooltip: 'Sleep timer',
@@ -634,19 +1067,20 @@ jobs:
                               ),
                             ],
                           ),
-                          StreamBuilder<double>(
-                            stream: player.audio.volumeStream,
-                            builder: (context, snap) {
-                              final v = (snap.data ?? 1.0).clamp(0.0, 1.0).toDouble();
-                              return Row(
-                                children: [
-                                  const Icon(Icons.volume_down, size: 20),
-                                  Expanded(child: Slider(min: 0, max: 1, value: v, onChanged: player.audio.setVolume)),
-                                  const Icon(Icons.volume_up, size: 20),
-                                ],
-                              );
-                            },
-                          ),
+                          if (!sp)
+                            StreamBuilder<double>(
+                              stream: player.audio.volumeStream,
+                              builder: (context, snap) {
+                                final v = (snap.data ?? 1.0).clamp(0.0, 1.0).toDouble();
+                                return Row(
+                                  children: [
+                                    const Icon(Icons.volume_down, size: 20),
+                                    Expanded(child: Slider(min: 0, max: 1, value: v, onChanged: player.audio.setVolume)),
+                                    const Icon(Icons.volume_up, size: 20),
+                                  ],
+                                );
+                              },
+                            ),
                         ],
                       ),
                     ),
@@ -656,6 +1090,22 @@ jobs:
             }
 
             Widget _seekBar() {
+              if (player.spotifyActive) {
+                final total = player.spDur.inMilliseconds;
+                return Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 16),
+                  child: Column(
+                    children: [
+                      LinearProgressIndicator(value: total > 0 ? (player.spPos.inMilliseconds / total).clamp(0.0, 1.0).toDouble() : null),
+                      const SizedBox(height: 6),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [Text(fmt(player.spPos)), Text(fmt(player.spDur))],
+                      ),
+                    ],
+                  ),
+                );
+              }
               return StreamBuilder<Duration?>(
                 stream: player.audio.durationStream,
                 builder: (context, ds) {
@@ -705,8 +1155,12 @@ jobs:
                       subtitle: Text(t.artist, maxLines: 1, overflow: TextOverflow.ellipsis),
                       selected: i == player.index,
                       onTap: () {
-                        player.audio.seek(Duration.zero, index: i);
-                        player.audio.play();
+                        if (player.spotifyActive) {
+                          player.playQueue(player.queue, i);
+                        } else {
+                          player.audio.seek(Duration.zero, index: i);
+                          player.audio.play();
+                        }
                         Navigator.of(ctx).pop();
                       },
                     );
@@ -825,6 +1279,18 @@ jobs:
 
           // ---------------------------------------------------------------- music search
 
+          class SearchItem {
+            final String title;
+            final String subtitle;
+            final String image;
+            final bool round;
+            final Track? track;
+            final Future<List<Track>> Function()? loader;
+            final FollowedArtist? follow;
+
+            const SearchItem({required this.title, this.subtitle = '', this.image = '', this.round = false, this.track, this.loader, this.follow});
+          }
+
           class SearchTab extends StatefulWidget {
             const SearchTab({super.key});
 
@@ -834,8 +1300,11 @@ jobs:
 
           class _SearchTabState extends State<SearchTab> {
             final TextEditingController _ctrl = TextEditingController();
+            final stt.SpeechToText _speech = stt.SpeechToText();
+            bool _listening = false;
+            int _source = 0; // 0 Audius, 1 Jamendo, 2 Spotify
             int _mode = 0; // 0 songs, 1 artists, 2 albums
-            List<dynamic> _results = [];
+            List<SearchItem> _items = [];
             bool _loading = false;
             String? _error;
             String _heading = 'Trending';
@@ -848,81 +1317,262 @@ jobs:
 
             @override
             void dispose() {
+              _speech.cancel();
               _ctrl.dispose();
               super.dispose();
             }
 
+            Future<void> _toggleMic() async {
+              if (_listening) {
+                await _speech.stop();
+                if (mounted) setState(() => _listening = false);
+                return;
+              }
+              final ok = await _speech.initialize(
+                onStatus: (st) {
+                  if ((st == 'done' || st == 'notListening') && mounted) setState(() => _listening = false);
+                },
+                onError: (_) {
+                  if (mounted) setState(() => _listening = false);
+                },
+              );
+              if (!ok) {
+                toast('Voice search is not available. Allow microphone access in your phone settings.');
+                return;
+              }
+              setState(() => _listening = true);
+              await _speech.listen(
+                listenFor: const Duration(seconds: 20),
+                pauseFor: const Duration(seconds: 3),
+                onResult: (r) {
+                  _ctrl.text = r.recognizedWords;
+                  _ctrl.selection = TextSelection.collapsed(offset: _ctrl.text.length);
+                  if (r.finalResult) {
+                    if (mounted) setState(() => _listening = false);
+                    _run();
+                  }
+                },
+              );
+            }
+
             Future<void> _run() async {
               final q = _ctrl.text.trim();
+              if (_source == 2 && (!spotify.loggedIn || q.isEmpty)) {
+                setState(() {
+                  _items = [];
+                  _error = null;
+                  _heading = '';
+                });
+                return;
+              }
+              if (_source == 1 && kJamendoId.isEmpty) {
+                setState(() {
+                  _items = [];
+                  _error = 'Jamendo is not configured in this build.';
+                });
+                return;
+              }
+              if (q.isEmpty && _mode != 0) {
+                setState(() {
+                  _items = [];
+                  _error = null;
+                  _heading = 'Type a name to search';
+                });
+                return;
+              }
               setState(() {
                 _loading = true;
                 _error = null;
+                _heading = q.isEmpty ? 'Trending' : 'Results';
               });
               try {
-                Uri uri;
-                if (q.isEmpty) {
-                  _heading = 'Trending';
-                  uri = Uri.parse('$kApiBase/tracks/trending').replace(queryParameters: {'app_name': kAppName});
-                  _mode = 0;
+                List<SearchItem> items;
+                if (_source == 1) {
+                  items = await _jamendo(q);
+                } else if (_source == 2) {
+                  items = await _spotify(q);
                 } else {
-                  _heading = 'Results';
-                  final path = const ['tracks', 'users', 'playlists'][_mode];
-                  uri = Uri.parse('$kApiBase/$path/search').replace(queryParameters: {'query': q, 'app_name': kAppName});
+                  items = await _audius(q);
                 }
-                final list = await getList(uri);
-                if (mounted) setState(() => _results = list);
+                if (mounted) setState(() => _items = items);
               } catch (e) {
                 if (mounted) setState(() => _error = 'Search failed. Check your connection and try again.');
               }
               if (mounted) setState(() => _loading = false);
             }
 
-            Widget _body() {
-              if (_loading) return const Center(child: CircularProgressIndicator());
-              if (_error != null) return Center(child: Text(_error!));
-              if (_results.isEmpty) return const Center(child: Text('Nothing found'));
+            SearchItem _songItem(Track t) => SearchItem(title: t.title, subtitle: t.artist, image: t.artwork, track: t);
 
-              if (_mode == 0) {
-                final tracks = _results.where((j) => j['is_streamable'] != false).map((j) => Track.fromAudius(Map<String, dynamic>.from(j as Map))).toList();
-                return ListView.builder(
-                  itemCount: tracks.length,
-                  itemBuilder: (_, i) => TrackTile(track: tracks[i], onTap: () => player.playQueue(tracks, i)),
-                );
+            Future<List<SearchItem>> _audius(String q) async {
+              if (q.isEmpty) {
+                final list = await getList(Uri.parse('$kApiBase/tracks/trending').replace(queryParameters: {'app_name': kAppName}));
+                return audiusTracks(list).map(_songItem).toList();
               }
+              final path = const ['tracks', 'users', 'playlists'][_mode];
+              final list = await getList(Uri.parse('$kApiBase/$path/search').replace(queryParameters: {'query': q, 'app_name': kAppName}));
+              if (_mode == 0) return audiusTracks(list).map(_songItem).toList();
               if (_mode == 1) {
-                return ListView.builder(
-                  itemCount: _results.length,
-                  itemBuilder: (_, i) {
-                    final a = _results[i] as Map;
-                    final id = a['id'].toString();
-                    final name = (a['name'] ?? '').toString();
-                    final pic = imgOf(a['profile_picture']);
-                    return ListTile(
-                      leading: CircleAvatar(backgroundImage: pic.isNotEmpty ? NetworkImage(pic) : null, child: pic.isEmpty ? const Icon(Icons.person) : null),
-                      title: Text(name),
-                      subtitle: Text('${a['track_count'] ?? 0} tracks'),
-                      onTap: () => Navigator.of(context).push(MaterialPageRoute(
-                        builder: (_) => TrackListPage(title: name, uri: Uri.parse('$kApiBase/users/$id/tracks').replace(queryParameters: {'app_name': kAppName, 'limit': '100'})),
-                      )),
-                    );
+                return list.whereType<Map>().map<SearchItem>((a) {
+                  final id = a['id'].toString();
+                  return SearchItem(
+                    title: (a['name'] ?? '').toString(),
+                    subtitle: '${a['track_count'] ?? 0} tracks',
+                    image: imgOf(a['profile_picture']),
+                    round: true,
+                    follow: FollowedArtist(source: 'audius', id: id, name: (a['name'] ?? '').toString(), image: imgOf(a['profile_picture'])),
+                    loader: () async {
+                      final r = await getList(Uri.parse('$kApiBase/users/$id/tracks').replace(queryParameters: {'app_name': kAppName, 'limit': '100'}));
+                      return audiusTracks(r);
+                    },
+                  );
+                }).toList();
+              }
+              return list.whereType<Map>().map<SearchItem>((p) {
+                final id = p['id'].toString();
+                final user = p['user'];
+                final owner = user is Map ? (user['name'] ?? '').toString() : '';
+                return SearchItem(
+                  title: (p['playlist_name'] ?? 'Untitled').toString(),
+                  subtitle: '${p['is_album'] == true ? 'Album' : 'Playlist'} - $owner',
+                  image: imgOf(p['artwork']),
+                  loader: () async {
+                    final r = await getList(Uri.parse('$kApiBase/playlists/$id/tracks').replace(queryParameters: {'app_name': kAppName}));
+                    return audiusTracks(r);
                   },
                 );
+              }).toList();
+            }
+
+            Future<List<SearchItem>> _jamendo(String q) async {
+              if (q.isEmpty) {
+                final list = await getList(jamendoUri('/tracks/', {'order': 'popularity_week', 'limit': '30'}));
+                return jamendoTracks(list).map(_songItem).toList();
               }
+              if (_mode == 0) {
+                final list = await getList(jamendoUri('/tracks/', {'search': q, 'limit': '30'}));
+                return jamendoTracks(list).map(_songItem).toList();
+              }
+              if (_mode == 1) {
+                final list = await getList(jamendoUri('/artists/', {'namesearch': q, 'limit': '20'}));
+                return list.whereType<Map>().map<SearchItem>((a) {
+                  final id = a['id'].toString();
+                  final name = (a['name'] ?? '').toString();
+                  final image = (a['image'] ?? '').toString();
+                  return SearchItem(
+                    title: name,
+                    subtitle: 'Artist',
+                    image: image,
+                    round: true,
+                    follow: FollowedArtist(source: 'jamendo', id: id, name: name, image: image),
+                    loader: () async {
+                      final r = await getList(jamendoUri('/artists/tracks/', {'id': id}));
+                      if (r.isEmpty || r.first is! Map) return <Track>[];
+                      final tr = ((r.first as Map)['tracks'] as List?) ?? [];
+                      return jamendoTracks(tr, artist: name, image: image);
+                    },
+                  );
+                }).toList();
+              }
+              final list = await getList(jamendoUri('/albums/', {'namesearch': q, 'limit': '20'}));
+              return list.whereType<Map>().map<SearchItem>((a) {
+                final id = a['id'].toString();
+                final artist = (a['artist_name'] ?? '').toString();
+                final image = (a['image'] ?? '').toString();
+                return SearchItem(
+                  title: (a['name'] ?? 'Untitled').toString(),
+                  subtitle: 'Album - $artist',
+                  image: image,
+                  loader: () async {
+                    final r = await getList(jamendoUri('/albums/tracks/', {'id': id}));
+                    if (r.isEmpty || r.first is! Map) return <Track>[];
+                    final tr = ((r.first as Map)['tracks'] as List?) ?? [];
+                    return jamendoTracks(tr, artist: artist, image: image);
+                  },
+                );
+              }).toList();
+            }
+
+            Future<List<SearchItem>> _spotify(String q) async {
+              final type = const ['track', 'artist', 'album'][_mode];
+              final data = await spotify.getJson('/search', {'q': q, 'type': type, 'limit': '10'});
+              final bucket = data['${type}s'];
+              final raw = (bucket is Map ? bucket['items'] : null) as List? ?? [];
+              final items = raw.whereType<Map>().toList();
+              if (_mode == 0) {
+                return items.map((m) => _songItem(Track.fromSpotify(Map<String, dynamic>.from(m)))).toList();
+              }
+              if (_mode == 1) {
+                return items.map<SearchItem>((m) {
+                  final name = (m['name'] ?? '').toString();
+                  return SearchItem(
+                    title: name,
+                    subtitle: 'Artist',
+                    image: spImg(m['images']),
+                    round: true,
+                    loader: () async {
+                      final d = await spotify.getJson('/search', {'q': 'artist:"$name"', 'type': 'track', 'limit': '10'});
+                      final b = d['tracks'];
+                      final r = (b is Map ? b['items'] : null) as List? ?? [];
+                      return r.whereType<Map>().map((x) => Track.fromSpotify(Map<String, dynamic>.from(x))).toList();
+                    },
+                  );
+                }).toList();
+              }
+              return items.map<SearchItem>((m) {
+                final id = m['id'].toString();
+                final image = spImg(m['images']);
+                final artists = m['artists'];
+                final artist = (artists is List && artists.isNotEmpty && artists.first is Map) ? (artists.first['name'] ?? '').toString() : '';
+                return SearchItem(
+                  title: (m['name'] ?? 'Untitled').toString(),
+                  subtitle: 'Album - $artist',
+                  image: image,
+                  loader: () async {
+                    final d = await spotify.getJson('/albums/$id');
+                    final b = d['tracks'];
+                    final r = (b is Map ? b['items'] : null) as List? ?? [];
+                    return r.whereType<Map>().map((x) => Track.fromSpotify(Map<String, dynamic>.from(x), image: image)).toList();
+                  },
+                );
+              }).toList();
+            }
+
+            Widget _spotifyGate() {
+              if (!SpotifyService.clientId.isNotEmpty) {
+                return const Center(child: Text('Spotify is not configured in this build.', textAlign: TextAlign.center));
+              }
+              return Center(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Text('Log in with a Spotify Premium account to search and play full songs.\nPlayback happens in the Spotify app.', textAlign: TextAlign.center),
+                    const SizedBox(height: 12),
+                    FilledButton.icon(onPressed: spotify.login, icon: const Icon(Icons.login), label: const Text('Log in with Spotify')),
+                  ],
+                ),
+              );
+            }
+
+            Widget _results() {
+              if (_loading) return const Center(child: CircularProgressIndicator());
+              if (_error != null) return Center(child: Text(_error!, textAlign: TextAlign.center));
+              if (_items.isEmpty) return const Center(child: Text('Nothing to show yet'));
+              final songs = _items.where((i) => i.track != null).map((i) => i.track!).toList();
               return ListView.builder(
-                itemCount: _results.length,
+                itemCount: _items.length,
                 itemBuilder: (_, i) {
-                  final p = _results[i] as Map;
-                  final id = p['id'].toString();
-                  final name = (p['playlist_name'] ?? 'Untitled').toString();
-                  final user = p['user'];
-                  final owner = user is Map ? (user['name'] ?? '').toString() : '';
+                  final item = _items[i];
+                  final t = item.track;
+                  if (t != null) {
+                    return TrackTile(track: t, onTap: () => player.playQueue(songs, songs.indexWhere((s) => s.id == t.id)));
+                  }
                   return ListTile(
-                    leading: Art(url: imgOf(p['artwork']), size: 48),
-                    title: Text(name, maxLines: 1, overflow: TextOverflow.ellipsis),
-                    subtitle: Text('${p['is_album'] == true ? 'Album' : 'Playlist'} - $owner'),
-                    onTap: () => Navigator.of(context).push(MaterialPageRoute(
-                      builder: (_) => TrackListPage(title: name, uri: Uri.parse('$kApiBase/playlists/$id/tracks').replace(queryParameters: {'app_name': kAppName})),
-                    )),
+                    leading: item.round
+                        ? CircleAvatar(backgroundImage: item.image.isNotEmpty ? NetworkImage(item.image) : null, child: item.image.isEmpty ? const Icon(Icons.person) : null)
+                        : Art(url: item.image, size: 48),
+                    title: Text(item.title, maxLines: 1, overflow: TextOverflow.ellipsis),
+                    subtitle: Text(item.subtitle, maxLines: 1, overflow: TextOverflow.ellipsis),
+                    onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => TrackListPage(title: item.title, loader: item.loader!, follow: item.follow))),
                   );
                 },
               );
@@ -939,12 +1589,32 @@ jobs:
                       controller: _ctrl,
                       textInputAction: TextInputAction.search,
                       decoration: InputDecoration(
-                        hintText: 'Search songs, artists, albums...',
+                        hintText: _listening ? 'Listening...' : 'Search songs, artists, albums...',
                         prefixIcon: const Icon(Icons.search),
+                        suffixIcon: IconButton(
+                          tooltip: 'Voice search',
+                          icon: Icon(_listening ? Icons.mic : Icons.mic_none, color: _listening ? Colors.redAccent : null),
+                          onPressed: _toggleMic,
+                        ),
                         filled: true,
                         border: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: BorderSide.none),
                       ),
                       onSubmitted: (_) => _run(),
+                    ),
+                    const SizedBox(height: 8),
+                    Wrap(
+                      spacing: 8,
+                      children: [
+                        for (final e in const ['Audius', 'Jamendo', 'Spotify'].asMap().entries)
+                          ChoiceChip(
+                            label: Text(e.value),
+                            selected: _source == e.key,
+                            onSelected: (_) {
+                              setState(() => _source = e.key);
+                              _run();
+                            },
+                          ),
+                      ],
                     ),
                     const SizedBox(height: 8),
                     SegmentedButton<int>(
@@ -960,8 +1630,15 @@ jobs:
                       },
                     ),
                     const SizedBox(height: 8),
-                    Text(_heading, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-                    Expanded(child: _body()),
+                    if (_heading.isNotEmpty) Text(_heading, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                    Expanded(
+                      child: _source == 2
+                          ? AnimatedBuilder(
+                              animation: spotify,
+                              builder: (context, _) => (!spotify.configured || !spotify.loggedIn) ? _spotifyGate() : _results(),
+                            )
+                          : _results(),
+                    ),
                   ],
                 ),
               );
@@ -970,8 +1647,9 @@ jobs:
 
           class TrackListPage extends StatefulWidget {
             final String title;
-            final Uri uri;
-            const TrackListPage({super.key, required this.title, required this.uri});
+            final Future<List<Track>> Function() loader;
+            final FollowedArtist? follow;
+            const TrackListPage({super.key, required this.title, required this.loader, this.follow});
 
             @override
             State<TrackListPage> createState() => _TrackListPageState();
@@ -990,8 +1668,7 @@ jobs:
 
             Future<void> _load() async {
               try {
-                final list = await getList(widget.uri);
-                final tracks = list.where((j) => j['is_streamable'] != false).map((j) => Track.fromAudius(Map<String, dynamic>.from(j as Map))).toList();
+                final tracks = await widget.loader();
                 if (mounted) setState(() => _tracks = tracks);
               } catch (_) {
                 if (mounted) setState(() => _error = 'Could not load tracks');
@@ -1002,7 +1679,23 @@ jobs:
             @override
             Widget build(BuildContext context) {
               return Scaffold(
-                appBar: AppBar(title: Text(widget.title)),
+                appBar: AppBar(
+                  title: Text(widget.title),
+                  actions: [
+                    if (widget.follow != null)
+                      AnimatedBuilder(
+                        animation: follows,
+                        builder: (context, _) {
+                          final f = follows.isFollowing(widget.follow!);
+                          return TextButton.icon(
+                            onPressed: () => follows.toggle(widget.follow!),
+                            icon: Icon(f ? Icons.check : Icons.person_add_alt),
+                            label: Text(f ? 'Following' : 'Follow'),
+                          );
+                        },
+                      ),
+                  ],
+                ),
                 floatingActionButton: _tracks.isEmpty
                     ? null
                     : FloatingActionButton.extended(
@@ -1069,6 +1762,402 @@ jobs:
               );
             }
           }
+
+          // ---------------------------------------------------------------- equalizer
+
+          class EqualizerScreen extends StatelessWidget {
+            const EqualizerScreen({super.key});
+
+            @override
+            Widget build(BuildContext context) {
+              return Scaffold(
+                appBar: AppBar(title: const Text('Sound Studio')),
+                body: ListView(
+                  padding: const EdgeInsets.all(16),
+                  children: [
+                    StreamBuilder<bool>(
+                      stream: player.equalizer.enabledStream,
+                      builder: (context, snap) {
+                        final on = snap.data ?? false;
+                        return SwitchListTile(title: const Text('Equalizer'), value: on, onChanged: player.equalizer.setEnabled);
+                      },
+                    ),
+                    FutureBuilder<AndroidEqualizerParameters>(
+                      future: player.equalizer.parameters,
+                      builder: (context, snap) {
+                        final p = snap.data;
+                        if (p == null) {
+                          return const Padding(
+                            padding: EdgeInsets.all(24),
+                            child: Center(child: Text('Start playing a song first, then reopen the equalizer.', textAlign: TextAlign.center)),
+                          );
+                        }
+                        return Column(
+                          children: p.bands.map((b) {
+                            return Column(
+                              children: [
+                                Text('${b.centerFrequency.round()} Hz'),
+                                StreamBuilder<double>(
+                                  stream: b.gainStream,
+                                  builder: (context, s) {
+                                    final v = (s.data ?? b.gain).clamp(p.minDecibels, p.maxDecibels).toDouble();
+                                    return Slider(min: p.minDecibels, max: p.maxDecibels, value: v, onChanged: b.setGain);
+                                  },
+                                ),
+                              ],
+                            );
+                          }).toList(),
+                        );
+                      },
+                    ),
+                    const SizedBox(height: 12),
+                    const Text('Volume boost'),
+                    StreamBuilder<double>(
+                      stream: player.loudness.targetGainStream,
+                      builder: (context, s) {
+                        final v = (s.data ?? 0.0).clamp(0.0, 10.0).toDouble();
+                        return Slider(min: 0, max: 10, value: v, onChanged: player.loudness.setTargetGain);
+                      },
+                    ),
+                  ],
+                ),
+              );
+            }
+          }
+
+          // ---------------------------------------------------------------- device music
+
+          class LocalTab extends StatefulWidget {
+            const LocalTab({super.key});
+
+            @override
+            State<LocalTab> createState() => _LocalTabState();
+          }
+
+          class _LocalTabState extends State<LocalTab> {
+            final OnAudioQuery _query = OnAudioQuery();
+            bool _loading = true;
+            bool _denied = false;
+            List<Track> _songs = [];
+            Map<String, List<Track>> _albums = {};
+            Map<String, List<Track>> _artists = {};
+            Map<String, List<Track>> _folders = {};
+
+            @override
+            void initState() {
+              super.initState();
+              _scan();
+            }
+
+            Future<void> _scan() async {
+              setState(() {
+                _loading = true;
+                _denied = false;
+              });
+              try {
+                var ok = await _query.permissionsStatus();
+                if (!ok) ok = await _query.permissionsRequest();
+                if (!ok) {
+                  if (mounted) {
+                    setState(() {
+                      _denied = true;
+                      _loading = false;
+                    });
+                  }
+                  return;
+                }
+                final found = await _query.querySongs(
+                  sortType: SongSortType.TITLE,
+                  orderType: OrderType.ASC_OR_SMALLER,
+                  uriType: UriType.EXTERNAL,
+                  ignoreCase: true,
+                );
+                final songs = <Track>[];
+                final albums = <String, List<Track>>{};
+                final artists = <String, List<Track>>{};
+                final folders = <String, List<Track>>{};
+                for (final s in found) {
+                  if ((s.duration ?? 0) < 30000) continue;
+                  final artist = s.artist ?? 'Unknown artist';
+                  final t = Track(
+                    id: 'dev-${s.id}',
+                    title: s.title,
+                    artist: artist,
+                    url: s.uri ?? 'file://${s.data}',
+                    canDownload: false,
+                  );
+                  songs.add(t);
+                  albums.putIfAbsent(s.album ?? 'Unknown album', () => []).add(t);
+                  artists.putIfAbsent(artist, () => []).add(t);
+                  final i = s.data.lastIndexOf('/');
+                  folders.putIfAbsent(i > 0 ? s.data.substring(0, i) : '/', () => []).add(t);
+                }
+                if (mounted) {
+                  setState(() {
+                    _songs = songs;
+                    _albums = albums;
+                    _artists = artists;
+                    _folders = folders;
+                    _loading = false;
+                  });
+                }
+              } catch (e) {
+                if (mounted) setState(() => _loading = false);
+                toast('Could not read music on this device');
+              }
+            }
+
+            Widget _groups(Map<String, List<Track>> m, IconData icon, {bool folder = false}) {
+              final keys = m.keys.toList()..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+              return ListView.builder(
+                itemCount: keys.length,
+                itemBuilder: (_, i) {
+                  final k = keys[i];
+                  final tracks = m[k]!;
+                  return ListTile(
+                    leading: Icon(icon),
+                    title: Text(folder ? k.split('/').last : k, maxLines: 1, overflow: TextOverflow.ellipsis),
+                    subtitle: Text(folder ? k : '${tracks.length} songs', maxLines: 1, overflow: TextOverflow.ellipsis),
+                    onTap: () => Navigator.of(context).push(MaterialPageRoute(
+                      builder: (_) => TrackListPage(title: folder ? k.split('/').last : k, loader: () async => tracks),
+                    )),
+                  );
+                },
+              );
+            }
+
+            @override
+            Widget build(BuildContext context) {
+              if (_loading) return const Center(child: CircularProgressIndicator());
+              if (_denied) {
+                return Center(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Text('Allow access to your music files to play them here.', textAlign: TextAlign.center),
+                      const SizedBox(height: 12),
+                      FilledButton(onPressed: _scan, child: const Text('Allow access')),
+                    ],
+                  ),
+                );
+              }
+              if (_songs.isEmpty) {
+                return Center(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Text('No music files found on this device.'),
+                      const SizedBox(height: 12),
+                      OutlinedButton(onPressed: _scan, child: const Text('Scan again')),
+                    ],
+                  ),
+                );
+              }
+              return DefaultTabController(
+                length: 4,
+                child: Column(
+                  children: [
+                    Row(
+                      children: [
+                        const Expanded(child: TabBar(tabs: [Tab(text: 'Music'), Tab(text: 'Album'), Tab(text: 'Artist'), Tab(text: 'Folder')])),
+                        IconButton(icon: const Icon(Icons.refresh), tooltip: 'Scan again', onPressed: _scan),
+                      ],
+                    ),
+                    Expanded(
+                      child: TabBarView(
+                        children: [
+                          ListView.builder(
+                            itemCount: _songs.length,
+                            itemBuilder: (_, i) => TrackTile(track: _songs[i], onTap: () => player.playQueue(_songs, i)),
+                          ),
+                          _groups(_albums, Icons.album),
+                          _groups(_artists, Icons.person),
+                          _groups(_folders, Icons.folder, folder: true),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              );
+            }
+          }
+
+          // ---------------------------------------------------------------- discover
+
+          class DiscoverTab extends StatefulWidget {
+            const DiscoverTab({super.key});
+
+            @override
+            State<DiscoverTab> createState() => _DiscoverTabState();
+          }
+
+          class _DiscoverTabState extends State<DiscoverTab> {
+            static const List<Map<String, String>> _chips = [
+              {'label': 'Trending'},
+              {'label': 'Afrobeats', 'query': 'afrobeats'},
+              {'label': 'Hip-Hop', 'genre': 'Hip-Hop/Rap'},
+              {'label': 'R&B', 'genre': 'R&B/Soul'},
+              {'label': 'Pop', 'genre': 'Pop'},
+              {'label': 'Electronic', 'genre': 'Electronic'},
+              {'label': 'Reggae', 'genre': 'Reggae'},
+              {'label': 'Dancehall', 'genre': 'Dancehall'},
+              {'label': 'Gospel', 'query': 'gospel'},
+              {'label': 'Latin', 'genre': 'Latin'},
+              {'label': 'Lo-Fi', 'genre': 'Lo-Fi'},
+            ];
+
+            int _chip = 0;
+            List<Track> _tracks = [];
+            List<Map<String, dynamic>> _playlists = [];
+            bool _loading = true;
+            String? _error;
+
+            @override
+            void initState() {
+              super.initState();
+              _loadPlaylists();
+              _loadTracks();
+            }
+
+            Future<void> _loadPlaylists() async {
+              try {
+                final list = await getList(Uri.parse('$kApiBase/playlists/trending').replace(queryParameters: {'app_name': kAppName, 'time': 'week'}));
+                if (mounted) {
+                  setState(() => _playlists = list.whereType<Map>().map((m) => Map<String, dynamic>.from(m)).take(12).toList());
+                }
+              } catch (_) {}
+            }
+
+            Future<void> _loadTracks() async {
+              setState(() {
+                _loading = true;
+                _error = null;
+              });
+              try {
+                final c = _chips[_chip];
+                final Uri uri;
+                if (c['query'] != null) {
+                  uri = Uri.parse('$kApiBase/tracks/search').replace(queryParameters: {'query': c['query']!, 'app_name': kAppName});
+                } else {
+                  final qp = <String, String>{'app_name': kAppName, 'time': 'week'};
+                  if (c['genre'] != null) qp['genre'] = c['genre']!;
+                  uri = Uri.parse('$kApiBase/tracks/trending').replace(queryParameters: qp);
+                }
+                final list = await getList(uri);
+                if (mounted) setState(() => _tracks = audiusTracks(list));
+              } catch (_) {
+                if (mounted) setState(() => _error = 'Could not load music');
+              }
+              if (mounted) setState(() => _loading = false);
+            }
+
+            Widget _artistAvatar(FollowedArtist a) {
+              return InkWell(
+                onTap: () => Navigator.of(context).push(MaterialPageRoute(
+                  builder: (_) => TrackListPage(title: a.name, loader: () => loadArtistTracks(a), follow: a),
+                )),
+                child: Padding(
+                  padding: const EdgeInsets.only(right: 12),
+                  child: SizedBox(
+                    width: 72,
+                    child: Column(
+                      children: [
+                        CircleAvatar(
+                          radius: 30,
+                          backgroundImage: a.image.isNotEmpty ? NetworkImage(a.image) : null,
+                          child: a.image.isEmpty ? const Icon(Icons.person) : null,
+                        ),
+                        const SizedBox(height: 6),
+                        Text(a.name, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 12)),
+                      ],
+                    ),
+                  ),
+                ),
+              );
+            }
+
+            Widget _playlistCard(Map<String, dynamic> p) {
+              final name = (p['playlist_name'] ?? 'Playlist').toString();
+              final id = p['id'].toString();
+              return InkWell(
+                onTap: () => Navigator.of(context).push(MaterialPageRoute(
+                  builder: (_) => TrackListPage(
+                    title: name,
+                    loader: () async => audiusTracks(await getList(Uri.parse('$kApiBase/playlists/$id/tracks').replace(queryParameters: {'app_name': kAppName}))),
+                  ),
+                )),
+                child: Padding(
+                  padding: const EdgeInsets.only(right: 12),
+                  child: SizedBox(
+                    width: 110,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Art(url: imgOf(p['artwork']), size: 110),
+                        const SizedBox(height: 6),
+                        Text(name, maxLines: 2, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 12)),
+                      ],
+                    ),
+                  ),
+                ),
+              );
+            }
+
+            @override
+            Widget build(BuildContext context) {
+              const h = TextStyle(fontSize: 16, fontWeight: FontWeight.bold);
+              return AnimatedBuilder(
+                animation: follows,
+                builder: (context, _) {
+                  return ListView(
+                    padding: const EdgeInsets.all(12),
+                    children: [
+                      if (follows.artists.isNotEmpty) ...[
+                        const Text('Following', style: h),
+                        const SizedBox(height: 8),
+                        SizedBox(
+                          height: 96,
+                          child: ListView(scrollDirection: Axis.horizontal, children: follows.artists.map(_artistAvatar).toList()),
+                        ),
+                        const SizedBox(height: 12),
+                      ],
+                      if (_playlists.isNotEmpty) ...[
+                        const Text('Trending playlists', style: h),
+                        const SizedBox(height: 8),
+                        SizedBox(
+                          height: 150,
+                          child: ListView(scrollDirection: Axis.horizontal, children: _playlists.map(_playlistCard).toList()),
+                        ),
+                        const SizedBox(height: 12),
+                      ],
+                      Wrap(
+                        spacing: 8,
+                        children: [
+                          for (var i = 0; i < _chips.length; i++)
+                            ChoiceChip(
+                              label: Text(_chips[i]['label']!),
+                              selected: _chip == i,
+                              onSelected: (_) {
+                                setState(() => _chip = i);
+                                _loadTracks();
+                              },
+                            ),
+                        ],
+                      ),
+                      const SizedBox(height: 8),
+                      Text(_chips[_chip]['label']!, style: h),
+                      if (_loading)
+                        const Center(child: Padding(padding: EdgeInsets.all(24), child: CircularProgressIndicator()))
+                      else if (_error != null)
+                        Center(child: Padding(padding: const EdgeInsets.all(24), child: Text(_error!)))
+                      else
+                        ..._tracks.asMap().entries.map((e) => TrackTile(track: e.value, onTap: () => player.playQueue(_tracks, e.key))),
+                    ],
+                  );
+                },
+              );
+            }
+          }
           EOF
 
           python3 - << 'PY'
@@ -1078,7 +2167,10 @@ jobs:
           p = 'android/app/src/main/AndroidManifest.xml'
           s = open(p).read()
           perms = ''.join('    <uses-permission android:name="android.permission.%s"/>\n' % n for n in [
-              'INTERNET', 'WAKE_LOCK', 'FOREGROUND_SERVICE', 'FOREGROUND_SERVICE_MEDIA_PLAYBACK'])
+              'INTERNET', 'WAKE_LOCK', 'FOREGROUND_SERVICE', 'FOREGROUND_SERVICE_MEDIA_PLAYBACK',
+              'READ_EXTERNAL_STORAGE', 'READ_MEDIA_AUDIO', 'RECORD_AUDIO'])
+          perms += ('    <queries>\n        <intent>\n            <action android:name="android.speech.RecognitionService"/>\n'
+                    '        </intent>\n    </queries>\n')
           s = s.replace('<application', perms + '    <application android:usesCleartextTraffic="true"', 1)
           s = s.replace('android:label="app_project"', 'android:label="Music Radio Hub"')
           services = (
@@ -1106,13 +2198,17 @@ jobs:
                   t = open(g).read()
               except FileNotFoundError:
                   continue
-              t = t.replace('minSdkVersion flutter.minSdkVersion', 'minSdkVersion 24')
-              t = t.replace('minSdk = flutter.minSdkVersion', 'minSdk = 24')
+              t = t.replace('minSdkVersion flutter.minSdkVersion',
+                            "minSdkVersion 24\n        manifestPlaceholders = [appAuthRedirectScheme: 'com.musicradio.app']")
+              t = t.replace('minSdk = flutter.minSdkVersion',
+                            'minSdk = 24\n        manifestPlaceholders["appAuthRedirectScheme"] = "com.musicradio.app"')
               open(g, 'w').write(t)
           PY
 
           flutter pub get
-          flutter build apk --release
+          flutter build apk --release \
+            --dart-define=SPOTIFY_CLIENT_ID="$SPOTIFY_CLIENT_ID" \
+            --dart-define=JAMENDO_CLIENT_ID="$JAMENDO_CLIENT_ID"
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
