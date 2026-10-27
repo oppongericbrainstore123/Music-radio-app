@@ -2159,24 +2159,53 @@ jobs:
           import glob
 
           p = 'android/app/src/main/AndroidManifest.xml'
-          s = open(p).read()
-          perms = ''.join('    <uses-permission android:name="android.permission.%s"/>\n' % n for n in [
-              'INTERNET', 'WAKE_LOCK', 'FOREGROUND_SERVICE', 'FOREGROUND_SERVICE_MEDIA_PLAYBACK',
-              'READ_EXTERNAL_STORAGE', 'READ_MEDIA_AUDIO', 'RECORD_AUDIO'])
-          perms += ('    <queries>\n        <intent>\n            <action android:name="android.speech.RecognitionService"/>\n'
-                    '        </intent>\n    </queries>\n')
-          s = s.replace('<application', perms + '    <application android:name="${applicationName}" android:usesCleartextTraffic="true"', 1)
-          s = s.replace('android:label="app_project"', 'android:label="Music Radio Hub"')
-          services = (
-              '        <service android:name="com.ryanheise.audioservice.AudioService"'
-              ' android:foregroundServiceType="mediaPlayback" android:exported="true">\n'
-              '            <intent-filter><action android:name="android.media.browse.MediaBrowserService"/></intent-filter>\n'
-              '        </service>\n'
-              '        <receiver android:name="com.ryanheise.audioservice.MediaButtonReceiver" android:exported="true">\n'
-              '            <intent-filter><action android:name="android.intent.action.MEDIA_BUTTON"/></intent-filter>\n'
-              '        </receiver>\n    ')
-          s = s.replace('</application>', services + '</application>', 1)
-          open(p, 'w').write(s)
+          clean_manifest = '''<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <uses-permission android:name="android.permission.INTERNET"/>
+              <uses-permission android:name="android.permission.WAKE_LOCK"/>
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK"/>
+              <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"/>
+              <uses-permission android:name="android.permission.READ_MEDIA_AUDIO"/>
+              <uses-permission android:name="android.permission.RECORD_AUDIO"/>
+              <queries>
+                  <intent>
+                      <action android:name="android.speech.RecognitionService"/>
+                  </intent>
+              </queries>
+              <application
+                  android:name="android.app.Application"
+                  android:label="Music Radio Hub"
+                  android:icon="@mipmap/ic_launcher"
+                  android:usesCleartextTraffic="true">
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true"
+                      android:launchMode="singleTop"
+                      android:theme="@style/LaunchTheme"
+                      android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
+                      android:hardwareAccelerated="true"
+                      android:windowSoftInputMode="adjustResize">
+                      <meta-data
+                        android:name="io.flutter.embedding.android.NormalTheme"
+                        android:resource="@style/NormalTheme"
+                        />
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN"/>
+                          <category android:name="android.intent.category.LAUNCHER"/>
+                      </intent-filter>
+                  </activity>
+                  <meta-data
+                      android:name="flutterEmbedding"
+                      android:value="2" />
+                  <service android:name="com.ryanheise.audioservice.AudioService" android:foregroundServiceType="mediaPlayback" android:exported="true">
+                      <intent-filter><action android:name="android.media.browse.MediaBrowserService"/></intent-filter>
+                  </service>
+                  <receiver android:name="com.ryanheise.audioservice.MediaButtonReceiver" android:exported="true">
+                      <intent-filter><action android:name="android.intent.action.MEDIA_BUTTON"/></intent-filter>
+                  </receiver>
+              </application>
+          </manifest>'''
+          open(p, 'w').write(clean_manifest)
 
           for f in glob.glob('android/app/src/main/kotlin/**/MainActivity.kt', recursive=True):
               k = open(f).read()
