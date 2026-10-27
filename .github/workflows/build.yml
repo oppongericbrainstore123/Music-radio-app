@@ -35,7 +35,7 @@ jobs:
 
           cat << 'EOF' > pubspec.yaml
           name: music_radio_app
-          description: Music streaming, offline player and global FM radio.
+          description: Music streaming, offline player, DJ studio and global FM radio.
           publish_to: 'none'
           version: 1.0.0+1
 
@@ -79,10 +79,8 @@ jobs:
 
           const String kAppName = 'MusicRadioHub';
           const String kApiBase = 'https://api.audius.co/v1';
-          const String kEnvJamendo = String.fromEnvironment('JAMENDO_CLIENT_ID');
-          const String kJamendoId = kEnvJamendo.isEmpty ? '5c8a0024' : kEnvJamendo;
-          const String kEnvSpotify = String.fromEnvironment('SPOTIFY_CLIENT_ID');
-          const String kSpotifyId = kEnvSpotify;
+          const String kJamendoId = '5c8a0024';
+          const String kSpotifyId = String.fromEnvironment('SPOTIFY_CLIENT_ID');
           const String kSpotifyRedirect = 'com.musicradio.app://callback';
 
           final GlobalKey<ScaffoldMessengerState> messengerKey = GlobalKey<ScaffoldMessengerState>();
@@ -771,6 +769,7 @@ jobs:
               const DiscoverTab(),
               const SearchTab(),
               const LocalTab(),
+              const DjTab(),
               const LibraryTab(),
             ];
 
@@ -805,6 +804,7 @@ jobs:
                     NavigationDestination(icon: Icon(Icons.explore), label: 'Discover'),
                     NavigationDestination(icon: Icon(Icons.search), label: 'Search'),
                     NavigationDestination(icon: Icon(Icons.phone_android), label: 'Device'),
+                    NavigationDestination(icon: Icon(Icons.album), label: 'DJ Studio'),
                     NavigationDestination(icon: Icon(Icons.library_music), label: 'Library'),
                   ],
                 ),
@@ -1894,6 +1894,171 @@ jobs:
             }
           }
 
+          // ---------------------------------------------------------------- dj mix studio
+
+          class DjTab extends StatefulWidget {
+            const DjTab({super.key});
+
+            @override
+            State<DjTab> createState() => _DjTabState();
+          }
+
+          class _DjTabState extends State<DjTab> {
+            final AudioPlayer deckA = AudioPlayer();
+            final AudioPlayer deckB = AudioPlayer();
+            double crossfade = 0.5;
+            double tempoA = 1.0;
+            double tempoB = 1.0;
+            Track? trackA;
+            Track? trackB;
+
+            @override
+            void dispose() {
+              deckA.dispose();
+              deckB.dispose();
+              super.dispose();
+            }
+
+            void _updateVolumes() {
+              deckA.setVolume(1.0 - crossfade);
+              deckB.setVolume(crossfade);
+            }
+
+            Future<void> _pickDeck(bool isA) async {
+              final list = player.downloads.isNotEmpty ? player.downloads : player.favorites;
+              if (list.isEmpty) {
+                toast('Add some songs to your library or offline downloads first!');
+                return;
+              }
+              showModalBottomSheet(
+                context: context,
+                builder: (ctx) => ListView.builder(
+                  itemCount: list.length,
+                  itemBuilder: (_, i) {
+                    final t = list[i];
+                    return ListTile(
+                      leading: Art(url: t.artwork, size: 40),
+                      title: Text(t.title, maxLines: 1),
+                      subtitle: Text(t.artist, maxLines: 1),
+                      onTap: () async {
+                        Navigator.of(ctx).pop();
+                        setState(() {
+                          if (isA) {
+                            trackA = t;
+                          } else {
+                            trackB = t;
+                          }
+                        });
+                        final playerRef = isA ? deckA : deckB;
+                        await playerRef.setUrl(t.isLocal ? t.url : t.url);
+                        playerRef.play();
+                      },
+                    );
+                  },
+                ),
+              );
+            }
+
+            @override
+            Widget build(BuildContext context) {
+              return Padding(
+                padding: const EdgeInsets.all(12),
+                child: Column(
+                  children: [
+                    const Text('DJ Mix Studio', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                    const SizedBox(height: 12),
+                    Expanded(
+                      child: Row(
+                        children: [
+                          Expanded(child: _buildDeck('DECK A', trackA, deckA, tempoA, (v) {
+                            setState(() => tempoA = v);
+                            deckA.setSpeed(v);
+                          }, () => _pickDeck(true))),
+                          const SizedBox(width: 12),
+                          Expanded(child: _buildDeck('DECK B', trackB, deckB, tempoB, (v) {
+                            setState(() => tempoB = v);
+                            deckB.setSpeed(v);
+                          }, () => _pickDeck(false))),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    const Text('Crossfader (A <---> B)', style: TextStyle(fontWeight: FontWeight.bold)),
+                    Row(
+                      children: [
+                        const Text('A'),
+                        Expanded(
+                          child: Slider(
+                            value: crossfade,
+                            onChanged: (v) {
+                              setState(() => crossfade = v);
+                              _updateVolumes();
+                            },
+                          ),
+                        ),
+                        const Text('B'),
+                      ],
+                    ),
+                  ],
+                ),
+              );
+            }
+
+            Widget _buildDeck(String name, Track? track, AudioPlayer p, double tempo, ValueChanged<double> onTempo, VoidCallback onSelect) {
+              return Card(
+                color: const Color(0xFF1E1E1E),
+                child: Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: Column(
+                    children: [
+                      Text(name, style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.greenAccent)),
+                      const SizedBox(height: 8),
+                      Art(url: track?.artwork ?? '', size: 80),
+                      const SizedBox(height: 8),
+                      Text(track?.title ?? 'No track loaded', maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.bold)),
+                      Text(track?.artist ?? 'Tap to select', maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 12, color: Colors.grey)),
+                      const Spacer(),
+                      OutlinedButton.icon(onPressed: onSelect, icon: const Icon(Icons.music_note, size: 16), label: const Text('Load')),
+                      StreamBuilder<PlayerState>(
+                        stream: p.playerStateStream,
+                        builder: (context, snap) {
+                          final playing = snap.data?.playing ?? false;
+                          return Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              IconButton(
+                                icon: Icon(playing ? Icons.pause_circle : Icons.play_circle, size: 36),
+                                onPressed: track == null ? null : () => playing ? p.pause() : p.play(),
+                              ),
+                              IconButton(
+                                icon: const Icon(Icons.replay, size: 28),
+                                onPressed: track == null ? null : () => p.seek(Duration.zero),
+                              ),
+                            ],
+                          );
+                        },
+                      ),
+                      const Text('Tempo / Pitch', style: TextStyle(fontSize: 11, color: Colors.grey)),
+                      Slider(
+                        min: 0.5,
+                        max: 2.0,
+                        value: tempo,
+                        onChanged: onTempo,
+                      ),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                        children: [
+                          ElevatedButton(onPressed: () => p.setSpeed(1.0), child: const Text('1x', style: TextStyle(fontSize: 11))),
+                          ElevatedButton(onPressed: () => p.setSpeed(1.25), child: const Text('1.25x', style: TextStyle(fontSize: 11))),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+              );
+            }
+          }
+
           // ---------------------------------------------------------------- device music
 
           class LocalTab extends StatefulWidget {
@@ -2293,7 +2458,7 @@ jobs:
               except FileNotFoundError:
                   continue
               t = t.replace('minSdkVersion flutter.minSdkVersion',
-                            "minSdkVersion 24\n        manifestPlaceholders = [appAuthRedirectScanScheme: 'com.musicradio.app', appAuthRedirectScheme: 'com.musicradio.app']")
+                            "minSdkVersion 24\n        manifestPlaceholders = [appAuthRedirectScheme: 'com.musicradio.app']")
               t = t.replace('minSdk = flutter.minSdkVersion',
                             'minSdk = 24\n        manifestPlaceholders["appAuthRedirectScheme"] = "com.musicradio.app"')
               open(g, 'w').write(t)
