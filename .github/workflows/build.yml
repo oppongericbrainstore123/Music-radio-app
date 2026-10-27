@@ -69,7 +69,6 @@ jobs:
 
           import 'package:flutter/material.dart';
           import 'package:flutter_appauth/flutter_appauth.dart';
-          import 'package:flutter_appauth/flutter_appauth.dart';
           import 'package:http/http.dart' as http;
           import 'package:just_audio/just_audio.dart';
           import 'package:just_audio_background/just_audio_background.dart';
@@ -82,7 +81,6 @@ jobs:
           const String kApiBase = 'https://api.audius.co/v1';
           const String kJamendoId = String.fromEnvironment('JAMENDO_CLIENT_ID');
           const String kJamendoBase = 'https://api.jamendo.com/v3.0';
-          const String kJamendoId = String.fromEnvironment('JAMENDO_CLIENT_ID');
           const String kSpotifyId = String.fromEnvironment('SPOTIFY_CLIENT_ID');
           const String kSpotifyRedirect = 'com.musicradio.app://callback';
 
@@ -90,7 +88,6 @@ jobs:
           final PlayerController player = PlayerController();
           final SpotifyService spotify = SpotifyService();
           final FollowService follows = FollowService();
-          final SpotifyService spotify = SpotifyService();
 
           void toast(String message) {
             messengerKey.currentState
@@ -359,7 +356,6 @@ jobs:
               return Map<String, dynamic>.from(json.decode(res.body) as Map);
             }
 
-            /// Returns null on success, otherwise a message for the user.
             Future<String?> play(List<String> uris) async {
               http.Response? res = await _send('PUT', '/me/player/play', body: {'uris': uris});
               if (res == null) return 'Log in to Spotify first';
@@ -473,7 +469,6 @@ jobs:
             Timer? _sleepTimer;
             SharedPreferences? _prefs;
 
-            // Spotify mode: playback happens in the Spotify app, we remote-control it.
             bool spotifyActive = false;
             bool spotifyPlaying = false;
             Duration spPos = Duration.zero;
@@ -2163,7 +2158,6 @@ jobs:
           python3 - << 'PY'
           import glob
 
-          # AndroidManifest: permissions, cleartext radio streams, background audio service
           p = 'android/app/src/main/AndroidManifest.xml'
           s = open(p).read()
           perms = ''.join('    <uses-permission android:name="android.permission.%s"/>\n' % n for n in [
@@ -2184,7 +2178,6 @@ jobs:
           s = s.replace('</application>', services + '</application>', 1)
           open(p, 'w').write(s)
 
-          # MainActivity must extend AudioServiceActivity for background playback
           for f in glob.glob('android/app/src/main/kotlin/**/MainActivity.kt', recursive=True):
               k = open(f).read()
               k = k.replace('import io.flutter.embedding.android.FlutterActivity',
@@ -2192,7 +2185,6 @@ jobs:
               k = k.replace('FlutterActivity()', 'AudioServiceActivity()')
               open(f, 'w').write(k)
 
-          # minSdk 24 (groovy or kotlin gradle)
           for g in ['android/app/build.gradle', 'android/app/build.gradle.kts']:
               try:
                   t = open(g).read()
