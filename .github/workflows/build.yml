@@ -2165,7 +2165,7 @@ jobs:
               'READ_EXTERNAL_STORAGE', 'READ_MEDIA_AUDIO', 'RECORD_AUDIO'])
           perms += ('    <queries>\n        <intent>\n            <action android:name="android.speech.RecognitionService"/>\n'
                     '        </intent>\n    </queries>\n')
-          s = s.replace('<application', perms + '    <application android:usesCleartextTraffic="true"', 1)
+          s = s.replace('<application', perms + '    <application android:name="${applicationName}" android:usesCleartextTraffic="true"', 1)
           s = s.replace('android:label="app_project"', 'android:label="Music Radio Hub"')
           services = (
               '        <service android:name="com.ryanheise.audioservice.AudioService"'
