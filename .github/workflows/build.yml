@@ -79,9 +79,10 @@ jobs:
 
           const String kAppName = 'MusicRadioHub';
           const String kApiBase = 'https://api.audius.co/v1';
-          const String kJamendoId = String.fromEnvironment('JAMENDO_CLIENT_ID');
-          const String kJamendoBase = 'https://api.jamendo.com/v3.0';
-          const String kSpotifyId = String.fromEnvironment('SPOTIFY_CLIENT_ID');
+          const String kEnvJamendo = String.fromEnvironment('JAMENDO_CLIENT_ID');
+          const String kJamendoId = kEnvJamendo.isEmpty ? '5c8a0024' : kEnvJamendo;
+          const String kEnvSpotify = String.fromEnvironment('SPOTIFY_CLIENT_ID');
+          const String kSpotifyId = kEnvSpotify;
           const String kSpotifyRedirect = 'com.musicradio.app://callback';
 
           final GlobalKey<ScaffoldMessengerState> messengerKey = GlobalKey<ScaffoldMessengerState>();
@@ -253,7 +254,7 @@ jobs:
           // ---------------------------------------------------------------- spotify
 
           class SpotifyService extends ChangeNotifier {
-            static const String clientId = String.fromEnvironment('SPOTIFY_CLIENT_ID');
+            static const String clientId = kSpotifyId;
             static const String redirect = 'com.musicradio.app://callback';
             static const List<String> scopes = [
               'user-modify-playback-state',
@@ -282,7 +283,7 @@ jobs:
 
             Future<void> login() async {
               if (!configured) {
-                toast('Spotify is not configured in this build');
+                toast('Spotify Client ID is not configured');
                 return;
               }
               try {
@@ -765,8 +766,13 @@ jobs:
 
           class _HomeScreenState extends State<HomeScreen> {
             int _tab = 0;
-            final Set<int> _visited = {0};
-            static const List<Widget> _pages = [RadioTab(), DiscoverTab(), SearchTab(), LocalTab(), LibraryTab()];
+            static final List<Widget> _pages = [
+              const RadioTab(),
+              const DiscoverTab(),
+              const SearchTab(),
+              const LocalTab(),
+              const LibraryTab(),
+            ];
 
             @override
             Widget build(BuildContext context) {
@@ -785,7 +791,7 @@ jobs:
                     Expanded(
                       child: IndexedStack(
                         index: _tab,
-                        children: [for (var i = 0; i < _pages.length; i++) _visited.contains(i) ? _pages[i] : const SizedBox.shrink()],
+                        children: _pages,
                       ),
                     ),
                     const MiniPlayer(),
@@ -793,10 +799,7 @@ jobs:
                 ),
                 bottomNavigationBar: NavigationBar(
                   selectedIndex: _tab,
-                  onDestinationSelected: (i) => setState(() {
-                    _tab = i;
-                    _visited.add(i);
-                  }),
+                  onDestinationSelected: (i) => setState(() => _tab = i),
                   destinations: const [
                     NavigationDestination(icon: Icon(Icons.radio), label: 'Radio'),
                     NavigationDestination(icon: Icon(Icons.explore), label: 'Discover'),
@@ -1360,13 +1363,6 @@ jobs:
                 });
                 return;
               }
-              if (_source == 1 && kJamendoId.isEmpty) {
-                setState(() {
-                  _items = [];
-                  _error = 'Jamendo is not configured in this build.';
-                });
-                return;
-              }
               if (q.isEmpty && _mode != 0) {
                 setState(() {
                   _items = [];
@@ -1533,8 +1529,8 @@ jobs:
             }
 
             Widget _spotifyGate() {
-              if (!SpotifyService.clientId.isNotEmpty) {
-                return const Center(child: Text('Spotify is not configured in this build.', textAlign: TextAlign.center));
+              if (!spotify.configured) {
+                return const Center(child: Text('Spotify Client ID is not configured.', textAlign: TextAlign.center));
               }
               return Center(
                 child: Column(
@@ -1758,10 +1754,41 @@ jobs:
             }
           }
 
-          // ---------------------------------------------------------------- equalizer
+          // ---------------------------------------------------------------- equalizer & sound studio
 
-          class EqualizerScreen extends StatelessWidget {
+          class EqualizerScreen extends StatefulWidget {
             const EqualizerScreen({super.key});
+
+            @override
+            State<EqualizerScreen> createState() => _EqualizerScreenState();
+          }
+
+          class _EqualizerScreenState extends State<EqualizerScreen> {
+            String _preset = 'Custom';
+
+            Future<void> _applyPreset(AndroidEqualizerParameters p, String name) async {
+              setState(() => _preset = name);
+              final bands = p.bands;
+              final double min = p.minDecibels;
+              final double max = p.maxDecibels;
+
+              for (var b in bands) {
+                double target = 0.0;
+                final freq = b.centerFrequency;
+                if (name == 'Bass Boost') {
+                  if (freq < 300) target = max * 0.8;
+                } else if (name == 'Rock') {
+                  if (freq < 250 || freq > 4000) target = max * 0.6;
+                } else if (name == 'Pop') {
+                  if (freq >= 500 && freq <= 3000) target = max * 0.5;
+                } else if (name == 'Classical') {
+                  if (freq < 500 || freq > 5000) target = max * 0.4;
+                } else if (name == 'Vocal') {
+                  if (freq >= 1000 && freq <= 4000) target = max * 0.7;
+                }
+                await b.setGain(target.clamp(min, max));
+              }
+            }
 
             @override
             Widget build(BuildContext context) {
@@ -1774,9 +1801,37 @@ jobs:
                       stream: player.equalizer.enabledStream,
                       builder: (context, snap) {
                         final on = snap.data ?? false;
-                        return SwitchListTile(title: const Text('Equalizer'), value: on, onChanged: player.equalizer.setEnabled);
+                        return SwitchListTile(
+                          title: const Text('Equalizer Active', style: TextStyle(fontWeight: FontWeight.bold)),
+                          value: on,
+                          onChanged: player.equalizer.setEnabled,
+                        );
                       },
                     ),
+                    const Divider(),
+                    const Text('Presets', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                    const SizedBox(height: 8),
+                    FutureBuilder<AndroidEqualizerParameters>(
+                      future: player.equalizer.parameters,
+                      builder: (context, snap) {
+                        final p = snap.data;
+                        return Wrap(
+                          spacing: 8,
+                          children: ['Flat', 'Bass Boost', 'Rock', 'Pop', 'Classical', 'Vocal'].map((name) {
+                            return ChoiceChip(
+                              label: Text(name),
+                              selected: _preset == name,
+                              onSelected: (_) {
+                                if (p != null) _applyPreset(p, name);
+                              },
+                            );
+                          }).toList(),
+                        );
+                      },
+                    ),
+                    const Divider(height: 24),
+                    const Text('Frequency Bands', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                    const SizedBox(height: 8),
                     FutureBuilder<AndroidEqualizerParameters>(
                       future: player.equalizer.parameters,
                       builder: (context, snap) {
@@ -1784,34 +1839,53 @@ jobs:
                         if (p == null) {
                           return const Padding(
                             padding: EdgeInsets.all(24),
-                            child: Center(child: Text('Start playing a song first, then reopen the equalizer.', textAlign: TextAlign.center)),
+                            child: Center(child: Text('Start playing a song first to unlock the bands.', textAlign: TextAlign.center)),
                           );
                         }
                         return Column(
                           children: p.bands.map((b) {
-                            return Column(
-                              children: [
-                                Text('${b.centerFrequency.round()} Hz'),
-                                StreamBuilder<double>(
-                                  stream: b.gainStream,
-                                  builder: (context, s) {
-                                    final v = (s.data ?? b.gain).clamp(p.minDecibels, p.maxDecibels).toDouble();
-                                    return Slider(min: p.minDecibels, max: p.maxDecibels, value: v, onChanged: b.setGain);
-                                  },
-                                ),
-                              ],
+                            return Padding(
+                              padding: const EdgeInsets.symmetric(vertical: 4),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text('${b.centerFrequency.round()} Hz', style: const TextStyle(color: Colors.grey)),
+                                  StreamBuilder<double>(
+                                    stream: b.gainStream,
+                                    builder: (context, s) {
+                                      final v = (s.data ?? b.gain).clamp(p.minDecibels, p.maxDecibels).toDouble();
+                                      return Slider(
+                                        min: p.minDecibels,
+                                        max: p.maxDecibels,
+                                        value: v,
+                                        onChanged: (val) {
+                                          setState(() => _preset = 'Custom');
+                                          b.setGain(val);
+                                        },
+                                      );
+                                    },
+                                  ),
+                                ],
+                              ),
                             );
                           }).toList(),
                         );
                       },
                     ),
-                    const SizedBox(height: 12),
-                    const Text('Volume boost'),
+                    const Divider(height: 24),
+                    const Text('Volume & Loudness Boost', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
                     StreamBuilder<double>(
                       stream: player.loudness.targetGainStream,
                       builder: (context, s) {
                         final v = (s.data ?? 0.0).clamp(0.0, 10.0).toDouble();
-                        return Slider(min: 0, max: 10, value: v, onChanged: player.loudness.setTargetGain);
+                        return Slider(
+                          min: 0,
+                          max: 10,
+                          divisions: 10,
+                          label: '${v.toStringAsFixed(1)} dB',
+                          value: v,
+                          onChanged: player.loudness.setTargetGain,
+                        );
                       },
                     ),
                   ],
@@ -1898,7 +1972,6 @@ jobs:
                 }
               } catch (e) {
                 if (mounted) setState(() => _loading = false);
-                toast('Could not read music on this device');
               }
             }
 
@@ -2220,7 +2293,7 @@ jobs:
               except FileNotFoundError:
                   continue
               t = t.replace('minSdkVersion flutter.minSdkVersion',
-                            "minSdkVersion 24\n        manifestPlaceholders = [appAuthRedirectScheme: 'com.musicradio.app']")
+                            "minSdkVersion 24\n        manifestPlaceholders = [appAuthRedirectScanScheme: 'com.musicradio.app', appAuthRedirectScheme: 'com.musicradio.app']")
               t = t.replace('minSdk = flutter.minSdkVersion',
                             'minSdk = 24\n        manifestPlaceholders["appAuthRedirectScheme"] = "com.musicradio.app"')
               open(g, 'w').write(t)
