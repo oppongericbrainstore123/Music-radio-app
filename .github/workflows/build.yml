@@ -75,7 +75,6 @@ jobs:
           const String kAppName = 'MusicRadioHub';
           const String kApiBase = 'https://api.audius.co/v1';
           const String kJamendoId = '5c8a0024';
-          // Public SoundCloud client ID for native API fetching
           const String kSoundCloudClientId = 'a3250268a7356230bfdf26880ea77fcd';
 
           final GlobalKey<ScaffoldMessengerState> messengerKey = GlobalKey<ScaffoldMessengerState>();
@@ -147,8 +146,6 @@ jobs:
             await player.init();
             runApp(const MusicRadioApp());
           }
-
-          // ---------------------------------------------------------------- models
 
           Uri jamendoUri(String path, Map<String, String> q) => Uri.https('api.jamendo.com', '/v3.0$path', {
                 'client_id': kJamendoId,
@@ -227,7 +224,6 @@ jobs:
               final id = j['id'].toString();
               final user = j['user'];
               final artworkUrl = (j['artwork_url'] ?? (user is Map ? user['avatar_url'] : '') ?? '').toString();
-              // Normalize SoundCloud thumbnail quality
               final highResArtwork = artworkUrl.replaceAll('large.jpg', 't500x500.jpg');
               final streamUrl = j['stream_url'] != null 
                   ? '${j['stream_url']}?client_id=$kSoundCloudClientId'
@@ -253,8 +249,6 @@ jobs:
               .map((j) => Track.fromJamendo(Map<String, dynamic>.from(j), artist: artist, image: image))
               .where((t) => t.url.isNotEmpty)
               .toList();
-
-          // ---------------------------------------------------------------- soundcloud native integration service
 
           class SoundCloudService extends ChangeNotifier {
             List<Track> libraryTracks = [];
@@ -301,7 +295,6 @@ jobs:
             Future<void> linkAccount() async {
               linked = true;
               await _prefs?.setBool('sc_linked', true);
-              // Fetch initial trending/popular tracks directly from SoundCloud API for library sync
               try {
                 final uri = Uri.parse('https://api.soundcloud.com/tracks').replace(queryParameters: {
                   'client_id': kSoundCloudClientId,
@@ -340,8 +333,6 @@ jobs:
               }
             }
           }
-
-          // ---------------------------------------------------------------- following
 
           class FollowedArtist {
             final String source;
@@ -396,8 +387,6 @@ jobs:
             final r = await getList(Uri.parse('$kApiBase/users/${a.id}/tracks').replace(queryParameters: {'app_name': kAppName, 'limit': '100'}));
             return audiusTracks(r);
           }
-
-          // ---------------------------------------------------------------- controller
 
           class PlayerController extends ChangeNotifier {
             final AndroidEqualizer equalizer = AndroidEqualizer();
@@ -587,8 +576,6 @@ jobs:
             }
           }
 
-          // ---------------------------------------------------------------- app shell
-
           class MusicRadioApp extends StatelessWidget {
             const MusicRadioApp({super.key});
 
@@ -665,8 +652,6 @@ jobs:
               );
             }
           }
-
-          // ---------------------------------------------------------------- shared widgets
 
           class Art extends StatelessWidget {
             final String url;
@@ -800,8 +785,6 @@ jobs:
               );
             }
           }
-
-          // ---------------------------------------------------------------- full player
 
           class PlayerScreen extends StatelessWidget {
             const PlayerScreen({super.key});
@@ -981,8 +964,6 @@ jobs:
             }
           }
 
-          // ---------------------------------------------------------------- radio
-
           class RadioTab extends StatefulWidget {
             const RadioTab({super.key});
 
@@ -1088,8 +1069,6 @@ jobs:
             }
           }
 
-          // ---------------------------------------------------------------- music search & browser
-
           class SearchItem {
             final String title;
             final String subtitle;
@@ -1113,8 +1092,8 @@ jobs:
             final TextEditingController _ctrl = TextEditingController();
             final stt.SpeechToText _speech = stt.SpeechToText();
             bool _listening = false;
-            int _source = 0; // 0 Audius, 1 Cloud Music, 2 SoundCloud
-            int _mode = 0; // 0 songs, 1 artists, 2 albums
+            int _source = 0;
+            int _mode = 0;
             List<SearchItem> _items = [];
             bool _loading = false;
             String? _error;
@@ -1441,8 +1420,6 @@ jobs:
             }
           }
 
-          // ---------------------------------------------------------------- library
-
           class LibraryTab extends StatelessWidget {
             const LibraryTab({super.key});
 
@@ -1554,8 +1531,6 @@ jobs:
               );
             }
           }
-
-          // ---------------------------------------------------------------- equalizer & sound studio
 
           class EqualizerScreen extends StatefulWidget {
             const EqualizerScreen({super.key});
@@ -1695,12 +1670,9 @@ jobs:
             }
           }
 
-          // ---------------------------------------------------------------- dj mix studio & sound panel
-
           class DjTab extends StatefulWidget {
             const DjTab({super.key});
 
-            @initState
             @override
             State<DjTab> createState() => _DjTabState();
           }
@@ -1736,7 +1708,6 @@ jobs:
 
             Future<void> _triggerSfx(String type) async {
               try {
-                // Free public sound effects URLs for DJ sampler pads
                 final urls = {
                   'horn': 'https://www.myinstants.com/media/sounds/air-horn-club-dj.mp3',
                   'scratch': 'https://www.myinstants.com/media/sounds/dj-scratch-sound-effect.mp3',
@@ -1755,7 +1726,7 @@ jobs:
               final List<Track> allTracks = [];
               allTracks.addAll(player.downloads);
               allTracks.addAll(player.favorites);
-              allTracks.addAll(soundcloud.library);
+              allTracks.addAll(soundcloud.libraryTracks);
 
               try {
                 final OnAudioQuery query = OnAudioQuery();
@@ -1820,7 +1791,6 @@ jobs:
                   children: [
                     const Text('DJ Mix Studio & Sound Panel', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
                     const SizedBox(height: 8),
-                    // DJ Sampler Soundboard
                     Container(
                       padding: const EdgeInsets.all(8),
                       decoration: BoxDecoration(color: const Color(0xFF1E1E1E), borderRadius: BorderRadius.circular(8)),
@@ -1971,8 +1941,6 @@ jobs:
               );
             }
           }
-
-          // ---------------------------------------------------------------- device music
 
           class LocalTab extends StatefulWidget {
             const LocalTab({super.key});
@@ -2127,8 +2095,6 @@ jobs:
               );
             }
           }
-
-          // ---------------------------------------------------------------- discover
 
           class DiscoverTab extends StatefulWidget {
             const DiscoverTab({super.key});
@@ -2329,11 +2295,6 @@ jobs:
               <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"/>
               <uses-permission android:name="android.permission.READ_MEDIA_AUDIO"/>
               <uses-permission android:name="android.permission.RECORD_AUDIO"/>
-              <queries>
-                  <intent>
-                      <action android:name="android.speech.RecognitionService"/>
-                  </intent>
-              </queries>
               <application
                   android:name="android.app.Application"
                   android:label="Music Radio Hub"
