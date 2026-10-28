@@ -265,7 +265,7 @@ jobs:
 
           class SpotifyService extends ChangeNotifier {
             static const String clientId = kSpotifyId;
-            static const String redirect = 'com.musicradio.app://callback';
+            static const String redirect = kSpotifyRedirect;
             static const List<String> scopes = [
               'user-modify-playback-state',
               'user-read-playback-state',
@@ -1375,14 +1375,6 @@ jobs:
                 });
                 return;
               }
-              if (q.isEmpty && _mode != 0) {
-                setState(() {
-                  _items = [];
-                  _error = null;
-                  _heading = 'Type a name to search';
-                });
-                return;
-              }
               setState(() {
                 _loading = true;
                 _error = null;
@@ -1921,6 +1913,12 @@ jobs:
             double crossfade = 0.5;
             double tempoA = 1.0;
             double tempoB = 1.0;
+            bool eqKillLowA = false;
+            bool eqKillMidA = false;
+            bool eqKillHighA = false;
+            bool eqKillLowB = false;
+            bool eqKillMidB = false;
+            bool eqKillHighB = false;
             Track? trackA;
             Track? trackB;
 
@@ -1932,12 +1930,11 @@ jobs:
             }
 
             void _updateVolumes() {
-              deckA.setVolume(1.0 - crossfade);
-              deckB.setVolume(crossfade);
+              deckA.setVolume((1.0 - crossfade) * (eqKillLowA && eqKillMidA && eqKillHighA ? 0.0 : 1.0));
+              deckB.setVolume(crossfade * (eqKillLowB && eqKillMidB && eqKillHighB ? 0.0 : 1.0));
             }
 
             Future<void> _pickTrack(bool isA) async {
-              // Gather songs from downloads, favorites, and device storage
               final List<Track> allTracks = [];
               allTracks.addAll(player.downloads);
               allTracks.addAll(player.favorites);
@@ -1957,7 +1954,6 @@ jobs:
                 }
               } catch (_) {}
 
-              // Remove duplicates by ID
               final uniqueTracks = <String, Track>{};
               for (var t in allTracks) {
                 uniqueTracks[t.id] = t;
@@ -2009,14 +2005,38 @@ jobs:
                     Expanded(
                       child: Row(
                         children: [
-                          Expanded(child: _buildDeck('DECK A', trackA, deckA, tempoA, (v) {
+                          Expanded(child: _buildDeck('DECK A', trackA, deckA, tempoA, eqKillLowA, eqKillMidA, eqKillHighA, (v) {
                             setState(() => tempoA = v);
                             deckA.setSpeed(v);
+                          }, (l, m, h) {
+                            setState(() {
+                              eqKillLowA = l;
+                              eqKillMidA = m;
+                              eqKillHighA = h;
+                            });
+                            _updateVolumes();
+                          }, () {
+                            if (trackB != null) {
+                              setState(() => tempoA = tempoB);
+                              deckA.setSpeed(tempoB);
+                            }
                           }, () => _pickTrack(true))),
                           const SizedBox(width: 12),
-                          Expanded(child: _buildDeck('DECK B', trackB, deckB, tempoB, (v) {
+                          Expanded(child: _buildDeck('DECK B', trackB, deckB, tempoB, eqKillLowB, eqKillMidB, eqKillHighB, (v) {
                             setState(() => tempoB = v);
                             deckB.setSpeed(v);
+                          }, (l, m, h) {
+                            setState(() {
+                              eqKillLowB = l;
+                              eqKillMidB = m;
+                              eqKillHighB = h;
+                            });
+                            _updateVolumes();
+                          }, () {
+                            if (trackA != null) {
+                              setState(() => tempoB = tempoA);
+                              deckB.setSpeed(tempoA);
+                            }
                           }, () => _pickTrack(false))),
                         ],
                       ),
@@ -2043,21 +2063,39 @@ jobs:
               );
             }
 
-            Widget _buildDeck(String name, Track? track, AudioPlayer p, double tempo, ValueChanged<double> onTempo, VoidCallback onSelect) {
+            Widget _buildDeck(
+              String name,
+              Track? track,
+              AudioPlayer p,
+              double tempo,
+              bool killLow,
+              bool killMid,
+              bool killHigh,
+              ValueChanged<double> onTempo,
+              Function(bool, bool, bool) onKill,
+              VoidCallback onSync,
+              VoidCallback onSelect,
+            ) {
               return Card(
                 color: const Color(0xFF1E1E1E),
                 child: Padding(
-                  padding: const EdgeInsets.all(12),
+                  padding: const EdgeInsets.all(8),
                   child: Column(
                     children: [
-                      Text(name, style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.greenAccent)),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Text(name, style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.greenAccent)),
+                          OutlinedButton(onPressed: onSync, style: OutlinedButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 6)), child: const Text('SYNC', style: TextStyle(fontSize: 10))),
+                        ],
+                      ),
+                      const SizedBox(height: 4),
+                      Art(url: track?.artwork ?? '', size: 64),
+                      const SizedBox(height: 4),
+                      Text(track?.title ?? 'No track', maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+                      Text(track?.artist ?? 'Tap Load', maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 11, color: Colors.grey)),
                       const SizedBox(height: 8),
-                      Art(url: track?.artwork ?? '', size: 80),
-                      const SizedBox(height: 8),
-                      Text(track?.title ?? 'No track loaded', maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.bold)),
-                      Text(track?.artist ?? 'Tap to select', maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 12, color: Colors.grey)),
-                      const Spacer(),
-                      OutlinedButton.icon(onPressed: onSelect, icon: const Icon(Icons.music_note, size: 16), label: const Text('Load')),
+                      OutlinedButton.icon(onPressed: onSelect, icon: const Icon(Icons.music_note, size: 14), label: const Text('Load', style: TextStyle(fontSize: 11))),
                       StreamBuilder<PlayerState>(
                         stream: p.playerStateStream,
                         builder: (context, snap) {
@@ -2066,30 +2104,42 @@ jobs:
                             mainAxisAlignment: MainAxisAlignment.center,
                             children: [
                               IconButton(
-                                icon: Icon(playing ? Icons.pause_circle : Icons.play_circle, size: 36),
+                                icon: Icon(playing ? Icons.pause_circle : Icons.play_circle, size: 30),
                                 onPressed: track == null ? null : () => playing ? p.pause() : p.play(),
                               ),
                               IconButton(
-                                icon: const Icon(Icons.replay, size: 28),
+                                icon: const Icon(Icons.replay, size: 24),
                                 onPressed: track == null ? null : () => p.seek(Duration.zero),
+                              ),
+                              IconButton(
+                                icon: const Icon(Icons.bolt, size: 24, color: Colors.amber),
+                                tooltip: 'Scratch / Brake',
+                                onPressed: track == null ? null : () async {
+                                  await p.setSpeed(0.2);
+                                  await Future.delayed(const Duration(milliseconds: 300));
+                                  await p.setSpeed(tempo);
+                                },
                               ),
                             ],
                           );
                         },
                       ),
-                      const Text('Tempo / Pitch', style: TextStyle(fontSize: 11, color: Colors.grey)),
+                      const Text('EQ Kills', style: TextStyle(fontSize: 10, color: Colors.grey)),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                        children: [
+                          FilterChip(label: const Text('L', style: TextStyle(fontSize: 9)), selected: killLow, onSelected: (_) => onKill(!killLow, killMid, killHigh)),
+                          FilterChip(label: const Text('M', style: TextStyle(fontSize: 9)), selected: killMid, onSelected: (_) => onKill(killLow, !killMid, killHigh)),
+                          FilterChip(label: const Text('H', style: TextStyle(fontSize: 9)), selected: killHigh, onSelected: (_) => onKill(killLow, killMid, !killHigh)),
+                        ],
+                      ),
+                      const SizedBox(height: 4),
+                      Text('Tempo: ${tempo.toStringAsFixed(2)}x', style: const TextStyle(fontSize: 10, color: Colors.grey)),
                       Slider(
                         min: 0.5,
                         max: 2.0,
                         value: tempo,
                         onChanged: onTempo,
-                      ),
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                        children: [
-                          ElevatedButton(onPressed: () => p.setSpeed(1.0), child: const Text('1x', style: TextStyle(fontSize: 11))),
-                          ElevatedButton(onPressed: () => p.setSpeed(1.25), child: const Text('1.25x', style: TextStyle(fontSize: 11))),
-                        ],
                       ),
                     ],
                   ),
@@ -2480,6 +2530,12 @@ jobs:
                       <intent-filter>
                           <action android:name="android.intent.action.MAIN"/>
                           <category android:name="android.intent.category.LAUNCHER"/>
+                      </intent-filter>
+                      <intent-filter>
+                          <action android:name="android.intent.action.VIEW"/>
+                          <category android:name="android.intent.category.DEFAULT"/>
+                          <category android:name="android.intent.category.BROWSABLE"/>
+                          <data android:scheme="com.musicradio.app" android:host="callback"/>
                       </intent-filter>
                   </activity>
                   <meta-data
