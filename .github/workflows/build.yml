@@ -30,8 +30,7 @@ jobs:
         env:
           SPOTIFY_CLIENT_ID: ${{ secrets.SPOTIFY_CLIENT_ID }}
         run: |
-          # If your files are inside a folder named app_project, uncomment the line below:
-          # cd app_project
+          cd app_project
           
           flutter pub get
           flutter build apk --release \
