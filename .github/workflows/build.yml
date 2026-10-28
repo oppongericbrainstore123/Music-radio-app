@@ -26,8 +26,6 @@ jobs:
           cache: true
 
       - name: Generate and Build App
-        env:
-          SPOTIFY_CLIENT_ID: ${{ secrets.SPOTIFY_CLIENT_ID }}
         run: |
           flutter create app_project --org com.musicradio --platforms=android
           cd app_project
@@ -49,10 +47,8 @@ jobs:
             http: ^1.2.0
             path_provider: ^2.1.2
             shared_preferences: ^2.2.2
-            flutter_appauth: ^6.0.2
             on_audio_query: ^2.9.0
             speech_to_text: ^6.6.0
-            webview_flutter: ^4.7.0
 
           dev_dependencies:
             flutter_test:
@@ -68,7 +64,6 @@ jobs:
           import 'dart:io';
 
           import 'package:flutter/material.dart';
-          import 'package:flutter_appauth/flutter_appauth.dart';
           import 'package:http/http.dart' as http;
           import 'package:just_audio/just_audio.dart';
           import 'package:just_audio_background/just_audio_background.dart';
@@ -76,17 +71,15 @@ jobs:
           import 'package:path_provider/path_provider.dart';
           import 'package:shared_preferences/shared_preferences.dart';
           import 'package:speech_to_text/speech_to_text.dart' as stt;
-          import 'package:webview_flutter/webview_flutter.dart';
 
           const String kAppName = 'MusicRadioHub';
           const String kApiBase = 'https://api.audius.co/v1';
           const String kJamendoId = '5c8a0024';
-          const String kSpotifyId = String.fromEnvironment('SPOTIFY_CLIENT_ID');
-          const String kSpotifyRedirect = 'com.musicradio.app://callback';
+          // Public SoundCloud client ID for native API fetching
+          const String kSoundCloudClientId = 'a3250268a7356230bfdf26880ea77fcd';
 
           final GlobalKey<ScaffoldMessengerState> messengerKey = GlobalKey<ScaffoldMessengerState>();
           final PlayerController player = PlayerController();
-          final SpotifyService spotify = SpotifyService();
           final SoundCloudService soundcloud = SoundCloudService();
           final FollowService follows = FollowService();
           final LocalCacheService cache = LocalCacheService();
@@ -149,7 +142,6 @@ jobs:
               androidNotificationChannelName: 'Audio playback',
               androidNotificationOngoing: true,
             );
-            await spotify.init();
             await soundcloud.init();
             await follows.init();
             await player.init();
@@ -157,14 +149,6 @@ jobs:
           }
 
           // ---------------------------------------------------------------- models
-
-          String spImg(dynamic images) {
-            if (images is List && images.isNotEmpty) {
-              final m = images[images.length > 1 ? 1 : 0];
-              if (m is Map) return (m['url'] ?? '').toString();
-            }
-            return '';
-          }
 
           Uri jamendoUri(String path, Map<String, String> q) => Uri.https('api.jamendo.com', '/v3.0$path', {
                 'client_id': kJamendoId,
@@ -181,7 +165,6 @@ jobs:
             final String artwork;
             final bool isLocal;
             final bool isLive;
-            final bool isSpotify;
             final bool canDownload;
 
             const Track({
@@ -192,7 +175,6 @@ jobs:
               this.artwork = '',
               this.isLocal = false,
               this.isLive = false,
-              this.isSpotify = false,
               this.canDownload = true,
             });
 
@@ -204,19 +186,17 @@ jobs:
                   'artwork': artwork,
                   'isLocal': isLocal,
                   'isLive': isLive,
-                  'isSpotify': isSpotify,
                   'canDownload': canDownload,
                 };
 
             factory Track.fromJson(Map<String, dynamic> j) => Track(
                   id: (j['id'] ?? '').toString(),
-                  title: (j['title'] ?? '').toString(),
-                  artist: (j['artist'] ?? '').toString(),
+                  title: (j['title'] ?? 'Untitled Track').toString(),
+                  artist: (j['artist'] ?? 'Unknown Artist').toString(),
                   url: (j['url'] ?? '').toString(),
                   artwork: (j['artwork'] ?? '').toString(),
                   isLocal: j['isLocal'] == true,
                   isLive: j['isLive'] == true,
-                  isSpotify: j['isSpotify'] == true,
                   canDownload: j['canDownload'] != false,
                 );
 
@@ -224,9 +204,9 @@ jobs:
               final id = j['id'].toString();
               final user = j['user'];
               return Track(
-                id: id,
-                title: (j['title'] ?? 'Untitled').toString(),
-                artist: user is Map ? (user['name'] ?? '').toString() : '',
+                id: 'audius-$id',
+                title: (j['title'] ?? 'Untitled Track').toString(),
+                artist: user is Map ? (user['name'] ?? 'Audius Artist').toString() : 'Audius Artist',
                 url: '$kApiBase/tracks/$id/stream?app_name=$kAppName',
                 artwork: imgOf(j['artwork']),
               );
@@ -235,7 +215,7 @@ jobs:
             factory Track.fromJamendo(Map<String, dynamic> j, {String artist = '', String image = ''}) {
               return Track(
                 id: 'jm-${j['id']}',
-                title: (j['name'] ?? 'Untitled').toString(),
+                title: (j['name'] ?? 'Untitled Track').toString(),
                 artist: (j['artist_name'] ?? artist).toString(),
                 url: (j['audio'] ?? '').toString(),
                 artwork: (j['image'] ?? j['album_image'] ?? image).toString(),
@@ -243,17 +223,22 @@ jobs:
               );
             }
 
-            factory Track.fromSpotify(Map<String, dynamic> j, {String image = ''}) {
-              final artists = j['artists'];
-              final album = j['album'];
+            factory Track.fromSoundCloud(Map<String, dynamic> j) {
+              final id = j['id'].toString();
+              final user = j['user'];
+              final artworkUrl = (j['artwork_url'] ?? (user is Map ? user['avatar_url'] : '') ?? '').toString();
+              // Normalize SoundCloud thumbnail quality
+              final highResArtwork = artworkUrl.replaceAll('large.jpg', 't500x500.jpg');
+              final streamUrl = j['stream_url'] != null 
+                  ? '${j['stream_url']}?client_id=$kSoundCloudClientId'
+                  : 'https://api.soundcloud.com/tracks/$id/stream?client_id=$kSoundCloudClientId';
+
               return Track(
-                id: 'sp-${j['id']}',
-                title: (j['name'] ?? 'Untitled').toString(),
-                artist: (artists is List && artists.isNotEmpty && artists.first is Map) ? (artists.first['name'] ?? '').toString() : '',
-                url: (j['uri'] ?? '').toString(),
-                artwork: album is Map ? spImg(album['images']) : image,
-                isSpotify: true,
-                canDownload: false,
+                id: 'sc-$id',
+                title: (j['title'] ?? 'Untitled Track').toString(),
+                artist: user is Map ? (user['username'] ?? 'SoundCloud Creator').toString() : 'SoundCloud Creator',
+                url: streamUrl,
+                artwork: highResArtwork,
               );
             }
           }
@@ -269,11 +254,13 @@ jobs:
               .where((t) => t.url.isNotEmpty)
               .toList();
 
-          // ---------------------------------------------------------------- soundcloud library sync
+          // ---------------------------------------------------------------- soundcloud native integration service
 
           class SoundCloudService extends ChangeNotifier {
             List<Track> libraryTracks = [];
+            List<Track> searchResults = [];
             bool linked = false;
+            bool searching = false;
             SharedPreferences? _prefs;
 
             Future<void> init() async {
@@ -287,27 +274,46 @@ jobs:
               }
             }
 
+            Future<void> search(String query) async {
+              if (query.isEmpty) {
+                searchResults = [];
+                notifyListeners();
+                return;
+              }
+              searching = true;
+              notifyListeners();
+              try {
+                final uri = Uri.parse('https://api.soundcloud.com/tracks').replace(queryParameters: {
+                  'client_id': kSoundCloudClientId,
+                  'q': query,
+                  'limit': '30',
+                });
+                final res = await http.get(uri);
+                if (res.statusCode == 200) {
+                  final list = json.decode(res.body) as List;
+                  searchResults = list.whereType<Map>().map((m) => Track.fromSoundCloud(Map<String, dynamic>.from(m))).toList();
+                }
+              } catch (_) {}
+              searching = false;
+              notifyListeners();
+            }
+
             Future<void> linkAccount() async {
               linked = true;
               await _prefs?.setBool('sc_linked', true);
-              // Simulated synced tracks from SoundCloud library
-              libraryTracks = [
-                const Track(
-                  id: 'sc-1',
-                  title: 'SoundCloud Cloud Mix 2026',
-                  artist: 'SC Creator',
-                  url: 'https://audiocdn.soundcloud.com/sample1.mp3',
-                  artwork: '',
-                ),
-                const Track(
-                  id: 'sc-2',
-                  title: 'Ambient Electronic Session',
-                  artist: 'SoundCloud Live',
-                  url: 'https://audiocdn.soundcloud.com/sample2.mp3',
-                  artwork: '',
-                ),
-              ];
-              await _save();
+              // Fetch initial trending/popular tracks directly from SoundCloud API for library sync
+              try {
+                final uri = Uri.parse('https://api.soundcloud.com/tracks').replace(queryParameters: {
+                  'client_id': kSoundCloudClientId,
+                  'limit': '25',
+                });
+                final res = await http.get(uri);
+                if (res.statusCode == 200) {
+                  final list = json.decode(res.body) as List;
+                  libraryTracks = list.whereType<Map>().map((m) => Track.fromSoundCloud(Map<String, dynamic>.from(m))).toList();
+                  await _save();
+                }
+              } catch (_) {}
               notifyListeners();
               toast('SoundCloud library successfully linked!');
             }
@@ -330,151 +336,7 @@ jobs:
                 libraryTracks.add(t);
                 await _save();
                 notifyListeners();
-                toast('Imported "${t.title}" to app library');
-              }
-            }
-          }
-
-          // ---------------------------------------------------------------- spotify
-
-          class SpotifyService extends ChangeNotifier {
-            static const String clientId = kSpotifyId;
-            static const String redirect = kSpotifyRedirect;
-            static const List<String> scopes = [
-              'user-modify-playback-state',
-              'user-read-playback-state',
-              'user-read-currently-playing',
-            ];
-
-            final FlutterAppAuth _auth = FlutterAppAuth();
-            final AuthorizationServiceConfiguration _config = AuthorizationServiceConfiguration(
-              authorizationEndpoint: 'https://accounts.spotify.com/authorize',
-              tokenEndpoint: 'https://accounts.spotify.com/api/token',
-            );
-
-            SharedPreferences? _prefs;
-            String? _access;
-            String? _refresh;
-            DateTime? _expiry;
-
-            bool get configured => clientId.isNotEmpty;
-            bool get loggedIn => _refresh != null;
-
-            Future<void> init() async {
-              _prefs = await SharedPreferences.getInstance();
-              _refresh = _prefs?.getString('sp_refresh');
-            }
-
-            Future<void> login() async {
-              if (!configured) {
-                toast('Spotify Client ID is not configured');
-                return;
-              }
-              try {
-                final r = await _auth.authorizeAndExchangeCode(
-                  AuthorizationTokenRequest(clientId, redirect, serviceConfiguration: _config, scopes: scopes),
-                );
-                if (r == null || r.refreshToken == null) {
-                  toast('Spotify login was cancelled');
-                  return;
-                }
-                _access = r.accessToken;
-                _expiry = r.accessTokenExpirationDateTime;
-                _refresh = r.refreshToken;
-                await _prefs?.setString('sp_refresh', _refresh!);
-                notifyListeners();
-                toast('Logged in to Spotify');
-              } catch (e) {
-                toast('Spotify login failed');
-              }
-            }
-
-            Future<void> logout() async {
-              _access = null;
-              _refresh = null;
-              _expiry = null;
-              await _prefs?.remove('sp_refresh');
-              notifyListeners();
-            }
-
-            Future<String?> token() async {
-              if (_refresh == null) return null;
-              if (_access != null && _expiry != null && DateTime.now().isBefore(_expiry!.subtract(const Duration(minutes: 1)))) {
-                return _access;
-              }
-              try {
-                final r = await _auth.token(TokenRequest(clientId, redirect, refreshToken: _refresh, serviceConfiguration: _config, scopes: scopes));
-                if (r == null || r.accessToken == null) return null;
-                _access = r.accessToken;
-                _expiry = r.accessTokenExpirationDateTime;
-                if (r.refreshToken != null) {
-                  _refresh = r.refreshToken;
-                  await _prefs?.setString('sp_refresh', _refresh!);
-                }
-                return _access;
-              } catch (_) {
-                return null;
-              }
-            }
-
-            Future<http.Response?> _send(String method, String path, {Map<String, String>? query, Object? body}) async {
-              final tok = await token();
-              if (tok == null) return null;
-              final uri = Uri.https('api.spotify.com', '/v1$path', query);
-              final headers = {'Authorization': 'Bearer $tok', 'Content-Type': 'application/json'};
-              final enc = body == null ? null : json.encode(body);
-              const timeout = Duration(seconds: 20);
-              switch (method) {
-                case 'PUT':
-                  return http.put(uri, headers: headers, body: enc).timeout(timeout);
-                case 'POST':
-                  return http.post(uri, headers: headers, body: enc).timeout(timeout);
-                default:
-                  return http.get(uri, headers: headers).timeout(timeout);
-              }
-            }
-
-            Future<Map<String, dynamic>> getJson(String path, [Map<String, String>? query]) async {
-              final res = await _send('GET', path, query: query);
-              if (res == null) throw 'Not logged in';
-              if (res.statusCode != 200) throw 'Spotify error ${res.statusCode}';
-              return Map<String, dynamic>.from(json.decode(res.body) as Map);
-            }
-
-            Future<String?> play(List<String> uris) async {
-              http.Response? res = await _send('PUT', '/me/player/play', body: {'uris': uris});
-              if (res == null) return 'Log in to Spotify first';
-              if (res.statusCode == 404) {
-                final dev = await _send('GET', '/me/player/devices');
-                if (dev != null && dev.statusCode == 200) {
-                  final list = (json.decode(dev.body)['devices'] as List?) ?? [];
-                  if (list.isNotEmpty) {
-                    res = await _send('PUT', '/me/player/play', query: {'device_id': list.first['id'].toString()}, body: {'uris': uris});
-                  }
-                }
-              }
-              if (res == null) return 'Spotify request failed';
-              final code = res.statusCode;
-              if (code == 200 || code == 202 || code == 204) return null;
-              if (code == 403) return 'Spotify Premium is required for playback';
-              if (code == 404) return 'Open the Spotify app on this phone once, then try again';
-              if (code == 429) return 'Spotify rate limit reached, try again soon';
-              return 'Spotify error $code';
-            }
-
-            Future<void> cmd(String method, String path, {Map<String, String>? query}) async {
-              try {
-                await _send(method, path, query: query);
-              } catch (_) {}
-            }
-
-            Future<Map<String, dynamic>?> state() async {
-              try {
-                final res = await _send('GET', '/me/player');
-                if (res == null || res.statusCode != 200) return null;
-                return Map<String, dynamic>.from(json.decode(res.body) as Map);
-              } catch (_) {
-                return null;
+                toast('Imported "${t.title}" to library');
               }
             }
           }
@@ -554,12 +416,6 @@ jobs:
             Timer? _sleepTimer;
             SharedPreferences? _prefs;
 
-            bool spotifyActive = false;
-            bool spotifyPlaying = false;
-            Duration spPos = Duration.zero;
-            Duration spDur = Duration.zero;
-            Timer? _spPoll;
-
             Track? get current => (queue.isNotEmpty && index >= 0 && index < queue.length) ? queue[index] : null;
             bool isFavorite(Track t) => favorites.any((f) => f.id == t.id);
             bool isDownloaded(Track t) => downloads.any((d) => d.id == t.id);
@@ -569,7 +425,7 @@ jobs:
               favorites = _load('favorites');
               downloads = _load('downloads').where((t) => File(t.url).existsSync()).toList();
               audio.currentIndexStream.listen((i) {
-                if (!spotifyActive && i != null && i != index) {
+                if (i != null && i != index) {
                   index = i;
                   notifyListeners();
                 }
@@ -593,20 +449,12 @@ jobs:
 
             Future<void> playQueue(List<Track> tracks, int start) async {
               if (tracks.isEmpty || start < 0 || start >= tracks.length) return;
-              final first = tracks[start];
-              final same = tracks.where((t) => t.isSpotify == first.isSpotify).toList();
-              final s = same.indexWhere((t) => t.id == first.id);
-              if (first.isSpotify) {
-                await _playSpotify(same.skip(s).take(100).toList());
-                return;
-              }
-              await _stopSpotify();
-              final resolved = same.map((t) {
+              final resolved = tracks.map((t) {
                 final local = downloads.where((d) => d.id == t.id);
                 return local.isNotEmpty ? local.first : t;
               }).toList();
               queue = resolved;
-              index = s;
+              index = start;
               notifyListeners();
               try {
                 final sources = <AudioSource>[];
@@ -622,7 +470,7 @@ jobs:
                     ),
                   ));
                 }
-                await audio.setAudioSource(ConcatenatingAudioSource(children: sources), initialIndex: s);
+                await audio.setAudioSource(ConcatenatingAudioSource(children: sources), initialIndex: start);
                 await audio.setSpeed(speed);
                 audio.play();
               } catch (e) {
@@ -630,63 +478,8 @@ jobs:
               }
             }
 
-            Future<void> _playSpotify(List<Track> list) async {
-              await audio.pause();
-              queue = list;
-              index = 0;
-              spotifyActive = true;
-              spotifyPlaying = false;
-              spPos = Duration.zero;
-              spDur = Duration.zero;
-              notifyListeners();
-              final err = await spotify.play(list.map((t) => t.url).toList());
-              if (err != null) {
-                spotifyActive = false;
-                toast(err);
-                notifyListeners();
-                return;
-              }
-              spotifyPlaying = true;
-              notifyListeners();
-              _spPoll?.cancel();
-              _spPoll = Timer.periodic(const Duration(seconds: 3), (_) => _poll());
-            }
-
-            Future<void> _poll() async {
-              if (!spotifyActive) return;
-              final st = await spotify.state();
-              if (st == null || !spotifyActive) return;
-              spotifyPlaying = st['is_playing'] == true;
-              spPos = Duration(milliseconds: (st['progress_ms'] as num?)?.toInt() ?? 0);
-              final item = st['item'];
-              if (item is Map) {
-                spDur = Duration(milliseconds: (item['duration_ms'] as num?)?.toInt() ?? 0);
-                final i = queue.indexWhere((t) => t.url == item['uri']);
-                if (i >= 0) index = i;
-              }
-              notifyListeners();
-            }
-
-            Future<void> _stopSpotify() async {
-              if (!spotifyActive) return;
-              spotifyActive = false;
-              spotifyPlaying = false;
-              _spPoll?.cancel();
-              await spotify.cmd('PUT', '/me/player/pause');
-            }
-
             Future<void> togglePlay() async {
-              if (spotifyActive) {
-                if (spotifyPlaying) {
-                  spotifyPlaying = false;
-                  notifyListeners();
-                  await spotify.cmd('PUT', '/me/player/pause');
-                } else {
-                  spotifyPlaying = true;
-                  notifyListeners();
-                  await spotify.cmd('PUT', '/me/player/play');
-                }
-              } else if (audio.playing) {
+              if (audio.playing) {
                 await audio.pause();
               } else {
                 audio.play();
@@ -694,31 +487,15 @@ jobs:
             }
 
             Future<void> next() async {
-              if (spotifyActive) {
-                await spotify.cmd('POST', '/me/player/next');
-                await Future.delayed(const Duration(milliseconds: 800));
-                await _poll();
-              } else {
-                await audio.seekToNext();
-              }
+              await audio.seekToNext();
             }
 
             Future<void> previous() async {
-              if (spotifyActive) {
-                await spotify.cmd('POST', '/me/player/previous');
-                await Future.delayed(const Duration(milliseconds: 800));
-                await _poll();
-              } else {
-                await audio.seekToPrevious();
-              }
+              await audio.seekToPrevious();
             }
 
             Future<void> pauseAll() async {
               await audio.pause();
-              if (spotifyActive) {
-                spotifyPlaying = false;
-                await spotify.cmd('PUT', '/me/player/pause');
-              }
               notifyListeners();
             }
 
@@ -733,7 +510,7 @@ jobs:
             }
 
             Future<void> download(Track t) async {
-              if (t.isLive || t.isSpotify || !t.canDownload) {
+              if (t.isLive || !t.canDownload) {
                 toast('This item can only be streamed');
                 return;
               }
@@ -776,23 +553,14 @@ jobs:
 
             Future<void> toggleShuffle() async {
               shuffle = !shuffle;
-              if (spotifyActive) {
-                await spotify.cmd('PUT', '/me/player/shuffle', query: {'state': '$shuffle'});
-              } else {
-                if (shuffle) await audio.shuffle();
-                await audio.setShuffleModeEnabled(shuffle);
-              }
+              if (shuffle) await audio.shuffle();
+              await audio.setShuffleModeEnabled(shuffle);
               notifyListeners();
             }
 
             Future<void> cycleLoop() async {
               loop = loop == LoopMode.off ? LoopMode.all : (loop == LoopMode.all ? LoopMode.one : LoopMode.off);
-              if (spotifyActive) {
-                final state = loop == LoopMode.off ? 'off' : (loop == LoopMode.all ? 'context' : 'track');
-                await spotify.cmd('PUT', '/me/player/repeat', query: {'state': state});
-              } else {
-                await audio.setLoopMode(loop);
-              }
+              await audio.setLoopMode(loop);
               notifyListeners();
             }
 
@@ -928,35 +696,23 @@ jobs:
 
             @override
             Widget build(BuildContext context) {
-              return AnimatedBuilder(
-                animation: player,
-                builder: (context, _) {
-                  if (player.spotifyActive) {
-                    return IconButton(
-                      iconSize: size,
-                      icon: Icon(player.spotifyPlaying ? Icons.pause_circle_filled : Icons.play_circle_filled),
-                      onPressed: player.togglePlay,
+              return StreamBuilder<PlayerState>(
+                stream: player.audio.playerStateStream,
+                builder: (context, snap) {
+                  final st = snap.data;
+                  final loading = st?.processingState == ProcessingState.loading || st?.processingState == ProcessingState.buffering;
+                  final playing = st?.playing ?? false;
+                  if (loading) {
+                    return SizedBox(
+                      width: size + 16,
+                      height: size + 16,
+                      child: const Padding(padding: EdgeInsets.all(12), child: CircularProgressIndicator(strokeWidth: 3)),
                     );
                   }
-                  return StreamBuilder<PlayerState>(
-                    stream: player.audio.playerStateStream,
-                    builder: (context, snap) {
-                      final st = snap.data;
-                      final loading = st?.processingState == ProcessingState.loading || st?.processingState == ProcessingState.buffering;
-                      final playing = st?.playing ?? false;
-                      if (loading) {
-                        return SizedBox(
-                          width: size + 16,
-                          height: size + 16,
-                          child: const Padding(padding: EdgeInsets.all(12), child: CircularProgressIndicator(strokeWidth: 3)),
-                        );
-                      }
-                      return IconButton(
-                        iconSize: size,
-                        icon: Icon(playing ? Icons.pause_circle_filled : Icons.play_circle_filled),
-                        onPressed: player.togglePlay,
-                      );
-                    },
+                  return IconButton(
+                    iconSize: size,
+                    icon: Icon(playing ? Icons.pause_circle_filled : Icons.play_circle_filled),
+                    onPressed: player.togglePlay,
                   );
                 },
               );
@@ -990,7 +746,7 @@ jobs:
                         ),
                         if (downloadsMode)
                           IconButton(icon: const Icon(Icons.delete_outline), onPressed: () => player.removeDownload(track))
-                        else if (!track.isLive && !track.isSpotify && track.canDownload)
+                        else if (!track.isLive && track.canDownload)
                           IconButton(
                             icon: Icon(dl ? Icons.download_done : Icons.download, color: dl ? Colors.greenAccent : null),
                             onPressed: dl ? null : () => player.download(track),
@@ -1059,22 +815,20 @@ jobs:
                   if (t == null) {
                     return Scaffold(appBar: AppBar(), body: const Center(child: Text('Nothing playing')));
                   }
-                  final sp = player.spotifyActive;
                   final fav = player.isFavorite(t);
                   final dl = player.isDownloaded(t);
-                  final canDl = !t.isLive && !t.isSpotify && t.canDownload;
+                  final canDl = !t.isLive && t.canDownload;
                   return Scaffold(
                     appBar: AppBar(
                       leading: IconButton(icon: const Icon(Icons.keyboard_arrow_down, size: 32), onPressed: () => Navigator.of(context).pop()),
                       title: const Text('Now Playing', style: TextStyle(fontSize: 14)),
                       centerTitle: true,
                       actions: [
-                        if (!sp)
-                          IconButton(
-                            icon: const Icon(Icons.equalizer),
-                            tooltip: 'Sound Studio',
-                            onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const EqualizerScreen())),
-                          ),
+                        IconButton(
+                          icon: const Icon(Icons.equalizer),
+                          tooltip: 'Sound Studio',
+                          onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const EqualizerScreen())),
+                        ),
                         IconButton(icon: const Icon(Icons.queue_music), onPressed: () => _showQueue(context)),
                       ],
                     ),
@@ -1083,11 +837,6 @@ jobs:
                       child: Column(
                         children: [
                           Art(url: t.artwork, size: 260),
-                          if (sp)
-                            const Padding(
-                              padding: EdgeInsets.only(top: 12),
-                              child: Chip(avatar: Icon(Icons.graphic_eq, size: 18), label: Text('Playing through Spotify')),
-                            ),
                           const SizedBox(height: 16),
                           Align(
                             alignment: Alignment.centerLeft,
@@ -1131,13 +880,12 @@ jobs:
                                   icon: Icon(dl ? Icons.download_done : Icons.download, color: dl ? Colors.greenAccent : null),
                                   onPressed: dl ? null : () => player.download(t),
                                 ),
-                              if (!sp)
-                                PopupMenuButton<double>(
-                                  icon: Icon(Icons.speed, color: player.speed != 1.0 ? Colors.greenAccent : null),
-                                  tooltip: 'Playback speed',
-                                  onSelected: player.setSpeed,
-                                  itemBuilder: (_) => [0.5, 0.75, 1.0, 1.25, 1.5, 2.0].map((s) => PopupMenuItem<double>(value: s, child: Text('${s}x'))).toList(),
-                                ),
+                              PopupMenuButton<double>(
+                                icon: Icon(Icons.speed, color: player.speed != 1.0 ? Colors.greenAccent : null),
+                                tooltip: 'Playback speed',
+                                onSelected: player.setSpeed,
+                                itemBuilder: (_) => [0.5, 0.75, 1.0, 1.25, 1.5, 2.0].map((s) => PopupMenuItem<double>(value: s, child: Text('${s}x'))).toList(),
+                              ),
                               PopupMenuButton<int>(
                                 icon: Icon(Icons.bedtime, color: player.sleepEnd != null ? Colors.greenAccent : null),
                                 tooltip: 'Sleep timer',
@@ -1151,20 +899,19 @@ jobs:
                               ),
                             ],
                           ),
-                          if (!sp)
-                            StreamBuilder<double>(
-                              stream: player.audio.volumeStream,
-                              builder: (context, snap) {
-                                final v = (snap.data ?? 1.0).clamp(0.0, 1.0).toDouble();
-                                return Row(
-                                  children: [
-                                    const Icon(Icons.volume_down, size: 20),
-                                    Expanded(child: Slider(min: 0, max: 1, value: v, onChanged: player.audio.setVolume)),
-                                    const Icon(Icons.volume_up, size: 20),
-                                  ],
-                                );
-                              },
-                            ),
+                          StreamBuilder<double>(
+                            stream: player.audio.volumeStream,
+                            builder: (context, snap) {
+                              final v = (snap.data ?? 1.0).clamp(0.0, 1.0).toDouble();
+                              return Row(
+                                children: [
+                                  const Icon(Icons.volume_down, size: 20),
+                                  Expanded(child: Slider(min: 0, max: 1, value: v, onChanged: player.audio.setVolume)),
+                                  const Icon(Icons.volume_up, size: 20),
+                                ],
+                              );
+                            },
+                          ),
                         ],
                       ),
                     ),
@@ -1174,22 +921,6 @@ jobs:
             }
 
             Widget _seekBar() {
-              if (player.spotifyActive) {
-                final total = player.spDur.inMilliseconds;
-                return Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 16),
-                  child: Column(
-                    children: [
-                      LinearProgressIndicator(value: total > 0 ? (player.spPos.inMilliseconds / total).clamp(0.0, 1.0).toDouble() : null),
-                      const SizedBox(height: 6),
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [Text(fmt(player.spPos)), Text(fmt(player.spDur))],
-                      ),
-                    ],
-                  ),
-                );
-              }
               return StreamBuilder<Duration?>(
                 stream: player.audio.durationStream,
                 builder: (context, ds) {
@@ -1239,12 +970,8 @@ jobs:
                       subtitle: Text(t.artist, maxLines: 1, overflow: TextOverflow.ellipsis),
                       selected: i == player.index,
                       onTap: () {
-                        if (player.spotifyActive) {
-                          player.playQueue(player.queue, i);
-                        } else {
-                          player.audio.seek(Duration.zero, index: i);
-                          player.audio.play();
-                        }
+                        player.audio.seek(Duration.zero, index: i);
+                        player.audio.play();
                         Navigator.of(ctx).pop();
                       },
                     );
@@ -1386,16 +1113,12 @@ jobs:
             final TextEditingController _ctrl = TextEditingController();
             final stt.SpeechToText _speech = stt.SpeechToText();
             bool _listening = false;
-            int _source = 0; // 0 Audius, 1 Cloud Music, 2 Spotify, 3 SoundCloud Browser
+            int _source = 0; // 0 Audius, 1 Cloud Music, 2 SoundCloud
             int _mode = 0; // 0 songs, 1 artists, 2 albums
             List<SearchItem> _items = [];
             bool _loading = false;
             String? _error;
             String _heading = 'Trending';
-
-            late final WebViewController _webController = WebViewController()
-              ..setJavaScriptMode(JavaScriptMode.unrestricted)
-              ..loadRequest(Uri.parse('https://m.soundcloud.com'));
 
             @override
             void initState() {
@@ -1445,21 +1168,6 @@ jobs:
 
             Future<void> _run() async {
               final q = _ctrl.text.trim();
-              if (_source == 3) {
-                if (q.isNotEmpty) {
-                  final uri = q.startsWith('http') ? Uri.parse(q) : Uri.parse('https://m.soundcloud.com/search?q=${Uri.encodeComponent(q)}');
-                  _webController.loadRequest(uri);
-                }
-                return;
-              }
-              if (_source == 2 && (!spotify.loggedIn || q.isEmpty)) {
-                setState(() {
-                  _items = [];
-                  _error = null;
-                  _heading = '';
-                });
-                return;
-              }
               setState(() {
                 _loading = true;
                 _error = null;
@@ -1470,7 +1178,8 @@ jobs:
                 if (_source == 1) {
                   items = await _jamendoCloud(q);
                 } else if (_source == 2) {
-                  items = await _spotify(q);
+                  await soundcloud.search(q);
+                  items = soundcloud.searchResults.map(_songItem).toList();
                 } else {
                   items = await _audius(q);
                 }
@@ -1512,7 +1221,7 @@ jobs:
                 final user = p['user'];
                 final owner = user is Map ? (user['name'] ?? '').toString() : '';
                 return SearchItem(
-                  title: (p['playlist_name'] ?? 'Untitled').toString(),
+                  title: (p['playlist_name'] ?? 'Untitled Playlist').toString(),
                   subtitle: '${p['is_album'] == true ? 'Album' : 'Playlist'} - $owner',
                   image: imgOf(p['artwork']),
                   loader: () async {
@@ -1559,7 +1268,7 @@ jobs:
                 final artist = (a['artist_name'] ?? '').toString();
                 final image = (a['image'] ?? '').toString();
                 return SearchItem(
-                  title: (a['name'] ?? 'Untitled').toString(),
+                  title: (a['name'] ?? 'Untitled Album').toString(),
                   subtitle: 'Cloud Album - $artist',
                   image: image,
                   loader: () async {
@@ -1570,67 +1279,6 @@ jobs:
                   },
                 );
               }).toList();
-            }
-
-            Future<List<SearchItem>> _spotify(String q) async {
-              final type = const ['track', 'artist', 'album'][_mode];
-              final data = await spotify.getJson('/search', {'q': q, 'type': type, 'limit': '10'});
-              final bucket = data['${type}s'];
-              final raw = (bucket is Map ? bucket['items'] : null) as List? ?? [];
-              final items = raw.whereType<Map>().toList();
-              if (_mode == 0) {
-                return items.map((m) => _songItem(Track.fromSpotify(Map<String, dynamic>.from(m)))).toList();
-              }
-              if (_mode == 1) {
-                return items.map<SearchItem>((m) {
-                  final name = (m['name'] ?? '').toString();
-                  return SearchItem(
-                    title: name,
-                    subtitle: 'Artist',
-                    image: spImg(m['images']),
-                    round: true,
-                    loader: () async {
-                      final d = await spotify.getJson('/search', {'q': 'artist:"$name"', 'type': 'track', 'limit': '10'});
-                      final b = d['tracks'];
-                      final r = (b is Map ? b['items'] : null) as List? ?? [];
-                      return r.whereType<Map>().map((x) => Track.fromSpotify(Map<String, dynamic>.from(x))).toList();
-                    },
-                  );
-                }).toList();
-              }
-              return items.map<SearchItem>((m) {
-                final id = m['id'].toString();
-                final image = spImg(m['images']);
-                final artists = m['artists'];
-                final artist = (artists is List && artists.isNotEmpty && artists.first is Map) ? (artists.first['name'] ?? '').toString() : '';
-                return SearchItem(
-                  title: (m['name'] ?? 'Untitled').toString(),
-                  subtitle: 'Album - $artist',
-                  image: image,
-                  loader: () async {
-                    final d = await spotify.getJson('/albums/$id');
-                    final b = d['tracks'];
-                    final r = (b is Map ? b['items'] : null) as List? ?? [];
-                    return r.whereType<Map>().map((x) => Track.fromSpotify(Map<String, dynamic>.from(x), image: image)).toList();
-                  },
-                );
-              }).toList();
-            }
-
-            Widget _spotifyGate() {
-              if (!spotify.configured) {
-                return const Center(child: Text('Spotify Client ID is not configured.', textAlign: TextAlign.center));
-              }
-              return Center(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const Text('Log in with a Spotify Premium account to search and play full songs.\nPlayback happens in the Spotify app.', textAlign: TextAlign.center),
-                    const SizedBox(height: 12),
-                    FilledButton.icon(onPressed: spotify.login, icon: const Icon(Icons.login), label: const Text('Log in with Spotify')),
-                  ],
-                ),
-              );
             }
 
             Widget _results() {
@@ -1660,82 +1308,61 @@ jobs:
 
             @override
             Widget build(BuildContext context) {
-              return WillPopScope(
-                onWillPop: () async {
-                  if (_source == 3 && await _webController.canGoBack()) {
-                    await _webController.goBack();
-                    return false;
-                  }
-                  return true;
-                },
-                child: Padding(
-                  padding: const EdgeInsets.all(12),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      TextField(
-                        controller: _ctrl,
-                        textInputAction: TextInputAction.search,
-                        decoration: InputDecoration(
-                          hintText: _listening ? 'Listening...' : (_source == 3 ? 'Search SoundCloud or enter URL...' : 'Search songs, artists, albums...'),
-                          prefixIcon: const Icon(Icons.search),
-                          suffixIcon: IconButton(
-                            tooltip: 'Voice search',
-                            icon: Icon(_listening ? Icons.mic : Icons.mic_none, color: _listening ? Colors.redAccent : null),
-                            onPressed: _toggleMic,
+              return Padding(
+                padding: const EdgeInsets.all(12),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    TextField(
+                      controller: _ctrl,
+                      textInputAction: TextInputAction.search,
+                      decoration: InputDecoration(
+                        hintText: _listening ? 'Listening...' : 'Search songs, artists, albums...',
+                        prefixIcon: const Icon(Icons.search),
+                        suffixIcon: IconButton(
+                          tooltip: 'Voice search',
+                          icon: Icon(_listening ? Icons.mic : Icons.mic_none, color: _listening ? Colors.redAccent : null),
+                          onPressed: _toggleMic,
+                        ),
+                        filled: true,
+                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: BorderSide.none),
+                      ),
+                      onSubmitted: (_) => _run(),
+                    ),
+                    const SizedBox(height: 8),
+                    Wrap(
+                      spacing: 8,
+                      children: [
+                        for (final e in const ['Audius', 'Cloud Music', 'SoundCloud'].asMap().entries)
+                          ChoiceChip(
+                            label: Text(e.value),
+                            selected: _source == e.key,
+                            onSelected: (_) {
+                              setState(() => _source = e.key);
+                              _run();
+                            },
                           ),
-                          filled: true,
-                          border: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: BorderSide.none),
-                        ),
-                        onSubmitted: (_) => _run(),
-                      ),
-                      const SizedBox(height: 8),
-                      Wrap(
-                        spacing: 8,
-                        children: [
-                          for (final e in const ['Audius', 'Cloud Music', 'Spotify', 'SoundCloud Browser'].asMap().entries)
-                            ChoiceChip(
-                              label: Text(e.value),
-                              selected: _source == e.key,
-                              onSelected: (_) {
-                                setState(() => _source = e.key);
-                                _run();
-                              },
-                            ),
-                        ],
-                      ),
-                      const SizedBox(height: 8),
-                      if (_source != 3) ...[
-                        SegmentedButton<int>(
-                          segments: const [
-                            ButtonSegment<int>(value: 0, label: Text('Songs')),
-                            ButtonSegment<int>(value: 1, label: Text('Artists')),
-                            ButtonSegment<int>(value: 2, label: Text('Albums')),
-                          ],
-                          selected: {_mode},
-                          onSelectionChanged: (s) {
-                            setState(() => _mode = s.first);
-                            _run();
-                          },
-                        ),
-                        const SizedBox(height: 8),
                       ],
-                      if (_heading.isNotEmpty && _source != 3) Text(_heading, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-                      Expanded(
-                        child: _source == 3
-                            ? ClipRRect(
-                                borderRadius: BorderRadius.circular(8),
-                                child: WebViewWidget(controller: _webController),
-                              )
-                            : (_source == 2
-                                ? AnimatedBuilder(
-                                    animation: spotify,
-                                    builder: (context, _) => (!spotify.configured || !spotify.loggedIn) ? _spotifyGate() : _results(),
-                                  )
-                                : _results()),
+                    ),
+                    const SizedBox(height: 8),
+                    if (_source != 2) ...[
+                      SegmentedButton<int>(
+                        segments: const [
+                          ButtonSegment<int>(value: 0, label: Text('Songs')),
+                          ButtonSegment<int>(value: 1, label: Text('Artists')),
+                          ButtonSegment<int>(value: 2, label: Text('Albums')),
+                        ],
+                        selected: {_mode},
+                        onSelectionChanged: (s) {
+                          setState(() => _mode = s.first);
+                          _run();
+                        },
                       ),
+                      const SizedBox(height: 8),
                     ],
-                  ),
+                    if (_heading.isNotEmpty) Text(_heading, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                    Expanded(child: _results()),
+                  ],
                 ),
               );
             }
@@ -2068,11 +1695,12 @@ jobs:
             }
           }
 
-          // ---------------------------------------------------------------- dj mix studio
+          // ---------------------------------------------------------------- dj mix studio & sound panel
 
           class DjTab extends StatefulWidget {
             const DjTab({super.key});
 
+            @initState
             @override
             State<DjTab> createState() => _DjTabState();
           }
@@ -2080,6 +1708,7 @@ jobs:
           class _DjTabState extends State<DjTab> {
             final AudioPlayer deckA = AudioPlayer();
             final AudioPlayer deckB = AudioPlayer();
+            final AudioPlayer fxPlayer = AudioPlayer();
             double crossfade = 0.5;
             double tempoA = 1.0;
             double tempoB = 1.0;
@@ -2096,6 +1725,7 @@ jobs:
             void dispose() {
               deckA.dispose();
               deckB.dispose();
+              fxPlayer.dispose();
               super.dispose();
             }
 
@@ -2104,11 +1734,28 @@ jobs:
               deckB.setVolume(crossfade * (eqKillLowB && eqKillMidB && eqKillHighB ? 0.0 : 1.0));
             }
 
+            Future<void> _triggerSfx(String type) async {
+              try {
+                // Free public sound effects URLs for DJ sampler pads
+                final urls = {
+                  'horn': 'https://www.myinstants.com/media/sounds/air-horn-club-dj.mp3',
+                  'scratch': 'https://www.myinstants.com/media/sounds/dj-scratch-sound-effect.mp3',
+                  'siren': 'https://www.myinstants.com/media/sounds/police-siren-sound-effect.mp3',
+                  'loop': 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3'
+                };
+                final url = urls[type];
+                if (url != null) {
+                  await fxPlayer.setUrl(url);
+                  await fxPlayer.play();
+                }
+              } catch (_) {}
+            }
+
             Future<void> _pickTrack(bool isA) async {
               final List<Track> allTracks = [];
               allTracks.addAll(player.downloads);
               allTracks.addAll(player.favorites);
-              allTracks.addAll(soundcloud.libraryTracks);
+              allTracks.addAll(soundcloud.library);
 
               try {
                 final OnAudioQuery query = OnAudioQuery();
@@ -2132,7 +1779,7 @@ jobs:
               final list = uniqueTracks.values.toList();
 
               if (list.isEmpty) {
-                toast('No music found. Scan device music or download songs first!');
+                toast('No music found. Scan device music or add songs first!');
                 return;
               }
 
@@ -2156,7 +1803,7 @@ jobs:
                           }
                         });
                         final playerRef = isA ? deckA : deckB;
-                        await playerRef.setUrl(t.isLocal ? t.url : t.url);
+                        await playerRef.setUrl(t.url);
                         playerRef.play();
                       },
                     );
@@ -2171,8 +1818,23 @@ jobs:
                 padding: const EdgeInsets.all(12),
                 child: Column(
                   children: [
-                    const Text('DJ Mix Studio', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-                    const SizedBox(height: 12),
+                    const Text('DJ Mix Studio & Sound Panel', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                    const SizedBox(height: 8),
+                    // DJ Sampler Soundboard
+                    Container(
+                      padding: const EdgeInsets.all(8),
+                      decoration: BoxDecoration(color: const Color(0xFF1E1E1E), borderRadius: BorderRadius.circular(8)),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                        children: [
+                          ElevatedButton.icon(icon: const Icon(Icons.campaign, size: 16), label: const Text('Horn'), onPressed: () => _triggerSfx('horn')),
+                          ElevatedButton.icon(icon: const Icon(Icons.disc_full, size: 16), label: const Text('Scratch'), onPressed: () => _triggerSfx('scratch')),
+                          ElevatedButton.icon(icon: const Icon(Icons.alarm, size: 16), label: const Text('Siren'), onPressed: () => _triggerSfx('siren')),
+                          ElevatedButton.icon(icon: const Icon(Icons.loop, size: 16), label: const Text('Loop Beat'), onPressed: () => _triggerSfx('loop')),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 8),
                     Expanded(
                       child: Row(
                         children: [
@@ -2192,7 +1854,7 @@ jobs:
                               deckA.setSpeed(tempoB);
                             }
                           }, () => _pickTrack(true))),
-                          const SizedBox(width: 12),
+                          const SizedBox(width: 8),
                           Expanded(child: _buildDeck('DECK B', trackB, deckB, tempoB, eqKillLowB, eqKillMidB, eqKillHighB, (v) {
                             setState(() => tempoB = v);
                             deckB.setSpeed(v);
@@ -2212,7 +1874,7 @@ jobs:
                         ],
                       ),
                     ),
-                    const SizedBox(height: 12),
+                    const SizedBox(height: 8),
                     const Text('Crossfader (A <---> B)', style: TextStyle(fontWeight: FontWeight.bold)),
                     Row(
                       children: [
@@ -2257,16 +1919,16 @@ jobs:
                         mainAxisAlignment: MainAxisAlignment.spaceBetween,
                         children: [
                           Text(name, style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.greenAccent)),
-                          OutlinedButton(onPressed: onSync, style: OutlinedButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 6)), child: const Text('SYNC', style: TextStyle(fontSize: 10))),
+                          OutlinedButton(onPressed: onSync, style: OutlinedButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 4)), child: const Text('SYNC', style: TextStyle(fontSize: 10))),
                         ],
                       ),
+                      const SizedBox(height: 2),
+                      Art(url: track?.artwork ?? '', size: 52),
+                      const SizedBox(height: 2),
+                      Text(track?.title ?? 'No track', maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
+                      Text(track?.artist ?? 'Tap Load', maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 10, color: Colors.grey)),
                       const SizedBox(height: 4),
-                      Art(url: track?.artwork ?? '', size: 64),
-                      const SizedBox(height: 4),
-                      Text(track?.title ?? 'No track', maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
-                      Text(track?.artist ?? 'Tap Load', maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 11, color: Colors.grey)),
-                      const SizedBox(height: 8),
-                      OutlinedButton.icon(onPressed: onSelect, icon: const Icon(Icons.music_note, size: 14), label: const Text('Load', style: TextStyle(fontSize: 11))),
+                      OutlinedButton.icon(onPressed: onSelect, icon: const Icon(Icons.music_note, size: 12), label: const Text('Load', style: TextStyle(fontSize: 10))),
                       StreamBuilder<PlayerState>(
                         stream: p.playerStateStream,
                         builder: (context, snap) {
@@ -2275,37 +1937,28 @@ jobs:
                             mainAxisAlignment: MainAxisAlignment.center,
                             children: [
                               IconButton(
-                                icon: Icon(playing ? Icons.pause_circle : Icons.play_circle, size: 30),
+                                icon: Icon(playing ? Icons.pause_circle : Icons.play_circle, size: 26),
                                 onPressed: track == null ? null : () => playing ? p.pause() : p.play(),
                               ),
                               IconButton(
-                                icon: const Icon(Icons.replay, size: 24),
+                                icon: const Icon(Icons.replay, size: 20),
                                 onPressed: track == null ? null : () => p.seek(Duration.zero),
-                              ),
-                              IconButton(
-                                icon: const Icon(Icons.bolt, size: 24, color: Colors.amber),
-                                tooltip: 'Scratch / Brake',
-                                onPressed: track == null ? null : () async {
-                                  await p.setSpeed(0.2);
-                                  await Future.delayed(const Duration(milliseconds: 300));
-                                  await p.setSpeed(tempo);
-                                },
                               ),
                             ],
                           );
                         },
                       ),
-                      const Text('EQ Kills', style: TextStyle(fontSize: 10, color: Colors.grey)),
+                      const Text('EQ Kills', style: TextStyle(fontSize: 9, color: Colors.grey)),
                       Row(
                         mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                         children: [
-                          FilterChip(label: const Text('L', style: TextStyle(fontSize: 9)), selected: killLow, onSelected: (_) => onKill(!killLow, killMid, killHigh)),
-                          FilterChip(label: const Text('M', style: TextStyle(fontSize: 9)), selected: killMid, onSelected: (_) => onKill(killLow, !killMid, killHigh)),
-                          FilterChip(label: const Text('H', style: TextStyle(fontSize: 9)), selected: killHigh, onSelected: (_) => onKill(killLow, killMid, !killHigh)),
+                          FilterChip(label: const Text('L', style: TextStyle(fontSize: 8)), selected: killLow, onSelected: (_) => onKill(!killLow, killMid, killHigh)),
+                          FilterChip(label: const Text('M', style: TextStyle(fontSize: 8)), selected: killMid, onSelected: (_) => onKill(killLow, !killMid, killHigh)),
+                          FilterChip(label: const Text('H', style: TextStyle(fontSize: 8)), selected: killHigh, onSelected: (_) => onKill(killLow, killMid, !killHigh)),
                         ],
                       ),
-                      const SizedBox(height: 4),
-                      Text('Tempo: ${tempo.toStringAsFixed(2)}x', style: const TextStyle(fontSize: 10, color: Colors.grey)),
+                      const SizedBox(height: 2),
+                      Text('Tempo: ${tempo.toStringAsFixed(2)}x', style: const TextStyle(fontSize: 9, color: Colors.grey)),
                       Slider(
                         min: 0.5,
                         max: 2.0,
@@ -2702,12 +2355,6 @@ jobs:
                           <action android:name="android.intent.action.MAIN"/>
                           <category android:name="android.intent.category.LAUNCHER"/>
                       </intent-filter>
-                      <intent-filter>
-                          <action android:name="android.intent.action.VIEW"/>
-                          <category android:name="android.intent.category.DEFAULT"/>
-                          <category android:name="android.intent.category.BROWSABLE"/>
-                          <data android:scheme="com.musicradio.app" android:host="callback"/>
-                      </intent-filter>
                   </activity>
                   <meta-data
                       android:name="flutterEmbedding"
@@ -2734,16 +2381,13 @@ jobs:
                   t = open(g).read()
               except FileNotFoundError:
                   continue
-              t = t.replace('minSdkVersion flutter.minSdkVersion',
-                            "minSdkVersion 24\n        manifestPlaceholders = [appAuthRedirectScheme: 'com.musicradio.app']")
-              t = t.replace('minSdk = flutter.minSdkVersion',
-                            'minSdk = 24\n        manifestPlaceholders["appAuthRedirectScheme"] = "com.musicradio.app"')
+              t = t.replace('minSdkVersion flutter.minSdkVersion', 'minSdkVersion 24')
+              t = t.replace('minSdk = flutter.minSdkVersion', 'minSdk = 24')
               open(g, 'w').write(t)
           PY
 
           flutter pub get
-          flutter build apk --release \
-            --dart-define=SPOTIFY_CLIENT_ID="$SPOTIFY_CLIENT_ID"
+          flutter build apk --release
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
