@@ -52,6 +52,7 @@ jobs:
             flutter_appauth: ^6.0.2
             on_audio_query: ^2.9.0
             speech_to_text: ^6.6.0
+            webview_flutter: ^4.7.0
 
           dev_dependencies:
             flutter_test:
@@ -75,10 +76,11 @@ jobs:
           import 'package:path_provider/path_provider.dart';
           import 'package:shared_preferences/shared_preferences.dart';
           import 'package:speech_to_text/speech_to_text.dart' as stt;
+          import 'package:webview_flutter/webview_flutter.dart';
 
           const String kAppName = 'MusicRadioHub';
           const String kApiBase = 'https://api.audius.co/v1';
-          const String kArchiveBase = 'https://archive.org/advancedsearch.php';
+          const String kJamendoId = '5c8a0024';
           const String kSpotifyId = String.fromEnvironment('SPOTIFY_CLIENT_ID');
           const String kSpotifyRedirect = 'com.musicradio.app://callback';
 
@@ -162,6 +164,13 @@ jobs:
             return '';
           }
 
+          Uri jamendoUri(String path, Map<String, String> q) => Uri.https('api.jamendo.com', '/v3.0$path', {
+                'client_id': kJamendoId,
+                'format': 'json',
+                'audioformat': 'mp32',
+                ...q,
+              });
+
           class Track {
             final String id;
             final String title;
@@ -221,6 +230,17 @@ jobs:
               );
             }
 
+            factory Track.fromJamendo(Map<String, dynamic> j, {String artist = '', String image = ''}) {
+              return Track(
+                id: 'jm-${j['id']}',
+                title: (j['name'] ?? 'Untitled').toString(),
+                artist: (j['artist_name'] ?? artist).toString(),
+                url: (j['audio'] ?? '').toString(),
+                artwork: (j['image'] ?? j['album_image'] ?? image).toString(),
+                canDownload: j['audiodownload_allowed'] != false,
+              );
+            }
+
             factory Track.fromSpotify(Map<String, dynamic> j, {String image = ''}) {
               final artists = j['artists'];
               final album = j['album'];
@@ -241,20 +261,9 @@ jobs:
               .map((j) => Track.fromAudius(Map<String, dynamic>.from(j as Map)))
               .toList();
 
-          List<Track> archiveTracks(List<dynamic> list) => list
+          List<Track> jamendoTracks(List<dynamic> list, {String artist = '', String image = ''}) => list
               .whereType<Map>()
-              .map((j) {
-                final identifier = (j['identifier'] ?? '').toString();
-                final title = (j['title'] ?? 'Audio Track').toString();
-                final creator = (j['creator'] ?? 'Archive').toString();
-                return Track(
-                  id: 'arc-$identifier',
-                  title: title,
-                  artist: creator,
-                  url: 'https://archive.org/download/$identifier/${identifier}.mp3',
-                  artwork: 'https://archive.org/services/img/$identifier',
-                );
-              })
+              .map((j) => Track.fromJamendo(Map<String, dynamic>.from(j), artist: artist, image: image))
               .where((t) => t.url.isNotEmpty)
               .toList();
 
@@ -448,6 +457,12 @@ jobs:
           }
 
           Future<List<Track>> loadArtistTracks(FollowedArtist a) async {
+            if (a.source == 'jamendo') {
+              final r = await getList(jamendoUri('/artists/tracks/', {'id': a.id}));
+              if (r.isEmpty || r.first is! Map) return <Track>[];
+              final tr = ((r.first as Map)['tracks'] as List?) ?? [];
+              return jamendoTracks(tr, artist: a.name, image: a.image);
+            }
             final r = await getList(Uri.parse('$kApiBase/users/${a.id}/tracks').replace(queryParameters: {'app_name': kAppName, 'limit': '100'}));
             return audiusTracks(r);
           }
@@ -1278,7 +1293,7 @@ jobs:
             }
           }
 
-          // ---------------------------------------------------------------- music search
+          // ---------------------------------------------------------------- music search & browser
 
           class SearchItem {
             final String title;
@@ -1303,12 +1318,16 @@ jobs:
             final TextEditingController _ctrl = TextEditingController();
             final stt.SpeechToText _speech = stt.SpeechToText();
             bool _listening = false;
-            int _source = 0; // 0 Audius, 1 Archive, 2 Spotify
+            int _source = 0; // 0 Audius, 1 Cloud Music, 2 Spotify, 3 Browser
             int _mode = 0; // 0 songs, 1 artists, 2 albums
             List<SearchItem> _items = [];
             bool _loading = false;
             String? _error;
             String _heading = 'Trending';
+
+            late final WebViewController _webController = WebViewController()
+              ..setJavaScriptMode(JavaScriptMode.unrestricted)
+              ..loadRequest(Uri.parse('https://duckduckgo.com/?q=free+mp3+music+listen+online'));
 
             @override
             void initState() {
@@ -1358,6 +1377,13 @@ jobs:
 
             Future<void> _run() async {
               final q = _ctrl.text.trim();
+              if (_source == 3) {
+                if (q.isNotEmpty) {
+                  final uri = q.startsWith('http') ? Uri.parse(q) : Uri.parse('https://duckduckgo.com/?q=$q+music+stream');
+                  _webController.loadRequest(uri);
+                }
+                return;
+              }
               if (_source == 2 && (!spotify.loggedIn || q.isEmpty)) {
                 setState(() {
                   _items = [];
@@ -1374,7 +1400,7 @@ jobs:
               try {
                 List<SearchItem> items;
                 if (_source == 1) {
-                  items = await _archive(q);
+                  items = await _jamendoCloud(q);
                 } else if (_source == 2) {
                   items = await _spotify(q);
                 } else {
@@ -1429,16 +1455,53 @@ jobs:
               }).toList();
             }
 
-            Future<List<SearchItem>> _archive(String q) async {
-              final queryStr = q.isEmpty ? 'mediatype:audio' : 'mediatype:audio AND ($q)';
-              final uri = Uri.parse(kArchiveBase).replace(queryParameters: {
-                'q': queryStr,
-                'fl[]': 'identifier,title,creator',
-                'rows': '30',
-                'output': 'json',
-              });
-              final list = await getList(uri);
-              return archiveTracks(list).map(_songItem).toList();
+            Future<List<SearchItem>> _jamendoCloud(String q) async {
+              if (q.isEmpty) {
+                final list = await getList(jamendoUri('/tracks/', {'order': 'popularity_week', 'limit': '30'}));
+                return jamendoTracks(list).map(_songItem).toList();
+              }
+              if (_mode == 0) {
+                final list = await getList(jamendoUri('/tracks/', {'search': q, 'limit': '30'}));
+                return jamendoTracks(list).map(_songItem).toList();
+              }
+              if (_mode == 1) {
+                final list = await getList(jamendoUri('/artists/', {'namesearch': q, 'limit': '20'}));
+                return list.whereType<Map>().map<SearchItem>((a) {
+                  final id = a['id'].toString();
+                  final name = (a['name'] ?? '').toString();
+                  final image = (a['image'] ?? '').toString();
+                  return SearchItem(
+                    title: name,
+                    subtitle: 'Cloud Artist',
+                    image: image,
+                    round: true,
+                    follow: FollowedArtist(source: 'jamendo', id: id, name: name, image: image),
+                    loader: () async {
+                      final r = await getList(jamendoUri('/artists/tracks/', {'id': id}));
+                      if (r.isEmpty || r.first is! Map) return <Track>[];
+                      final tr = ((r.first as Map)['tracks'] as List?) ?? [];
+                      return jamendoTracks(tr, artist: name, image: image);
+                    },
+                  );
+                }).toList();
+              }
+              final list = await getList(jamendoUri('/albums/', {'namesearch': q, 'limit': '20'}));
+              return list.whereType<Map>().map<SearchItem>((a) {
+                final id = a['id'].toString();
+                final artist = (a['artist_name'] ?? '').toString();
+                final image = (a['image'] ?? '').toString();
+                return SearchItem(
+                  title: (a['name'] ?? 'Untitled').toString(),
+                  subtitle: 'Cloud Album - $artist',
+                  image: image,
+                  loader: () async {
+                    final r = await getList(jamendoUri('/albums/tracks/', {'id': id}));
+                    if (r.isEmpty || r.first is! Map) return <Track>[];
+                    final tr = ((r.first as Map)['tracks'] as List?) ?? [];
+                    return jamendoTracks(tr, artist: artist, image: image);
+                  },
+                );
+              }).toList();
             }
 
             Future<List<SearchItem>> _spotify(String q) async {
@@ -1538,7 +1601,7 @@ jobs:
                       controller: _ctrl,
                       textInputAction: TextInputAction.search,
                       decoration: InputDecoration(
-                        hintText: _listening ? 'Listening...' : 'Search songs, artists, albums...',
+                        hintText: _listening ? 'Listening...' : (_source == 3 ? 'Enter URL or search online...' : 'Search songs, artists, albums...'),
                         prefixIcon: const Icon(Icons.search),
                         suffixIcon: IconButton(
                           tooltip: 'Voice search',
@@ -1554,7 +1617,7 @@ jobs:
                     Wrap(
                       spacing: 8,
                       children: [
-                        for (final e in const ['Audius', 'Archive', 'Spotify'].asMap().entries)
+                        for (final e in const ['Audius', 'Cloud Music', 'Spotify', 'Browser'].asMap().entries)
                           ChoiceChip(
                             label: Text(e.value),
                             selected: _source == e.key,
@@ -1566,27 +1629,34 @@ jobs:
                       ],
                     ),
                     const SizedBox(height: 8),
-                    SegmentedButton<int>(
-                      segments: const [
-                        ButtonSegment<int>(value: 0, label: Text('Songs')),
-                        ButtonSegment<int>(value: 1, label: Text('Artists')),
-                        ButtonSegment<int>(value: 2, label: Text('Albums')),
-                      ],
-                      selected: {_mode},
-                      onSelectionChanged: (s) {
-                        setState(() => _mode = s.first);
-                        _run();
-                      },
-                    ),
-                    const SizedBox(height: 8),
-                    if (_heading.isNotEmpty) Text(_heading, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                    if (_source != 3) ...[
+                      SegmentedButton<int>(
+                        segments: const [
+                          ButtonSegment<int>(value: 0, label: Text('Songs')),
+                          ButtonSegment<int>(value: 1, label: Text('Artists')),
+                          ButtonSegment<int>(value: 2, label: Text('Albums')),
+                        ],
+                        selected: {_mode},
+                        onSelectionChanged: (s) {
+                          setState(() => _mode = s.first);
+                          _run();
+                        },
+                      ),
+                      const SizedBox(height: 8),
+                    ],
+                    if (_heading.isNotEmpty && _source != 3) Text(_heading, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
                     Expanded(
-                      child: _source == 2
-                          ? AnimatedBuilder(
-                              animation: spotify,
-                              builder: (context, _) => (!spotify.configured || !spotify.loggedIn) ? _spotifyGate() : _results(),
+                      child: _source == 3
+                          ? ClipRRect(
+                              borderRadius: BorderRadius.circular(8),
+                              child: WebViewWidget(controller: _webController),
                             )
-                          : _results(),
+                          : (_source == 2
+                              ? AnimatedBuilder(
+                                  animation: spotify,
+                                  builder: (context, _) => (!spotify.configured || !spotify.loggedIn) ? _spotifyGate() : _results(),
+                                )
+                              : _results()),
                     ),
                   ],
                 ),
