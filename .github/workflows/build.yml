@@ -28,7 +28,6 @@ jobs:
       - name: Generate and Build App
         env:
           SPOTIFY_CLIENT_ID: ${{ secrets.SPOTIFY_CLIENT_ID }}
-          JAMENDO_CLIENT_ID: ${{ secrets.JAMENDO_CLIENT_ID }}
         run: |
           flutter create app_project --org com.musicradio --platforms=android
           cd app_project
@@ -79,7 +78,7 @@ jobs:
 
           const String kAppName = 'MusicRadioHub';
           const String kApiBase = 'https://api.audius.co/v1';
-          const String kJamendoId = '5c8a0024';
+          const String kArchiveBase = 'https://archive.org/advancedsearch.php';
           const String kSpotifyId = String.fromEnvironment('SPOTIFY_CLIENT_ID');
           const String kSpotifyRedirect = 'com.musicradio.app://callback';
 
@@ -117,13 +116,18 @@ jobs:
               if (_mem.containsKey(key)) return _mem[key];
               try {
                 final res = await http.get(uri, headers: {'User-Agent': 'MusicRadioHub/1.0'}).timeout(const Duration(seconds: 15));
-                if (res.statusCode != 200) throw 'Server error ${res.statusCode}';
+                if (res.statusCode != 200) return [];
                 final body = json.decode(res.body);
                 if (body is List) {
                   _mem[key] = body;
                   return body;
                 }
-                final d = (body is Map) ? (body['data'] ?? body['results']) : null;
+                final d = (body is Map) ? (body['data'] ?? body['results'] ?? body['response']) : null;
+                if (d is Map && d['docs'] is List) {
+                  final docs = d['docs'] as List;
+                  _mem[key] = docs;
+                  return docs;
+                }
                 final list = d is List ? d : <dynamic>[];
                 _mem[key] = list;
                 return list;
@@ -157,13 +161,6 @@ jobs:
             }
             return '';
           }
-
-          Uri jamendoUri(String path, Map<String, String> q) => Uri.https('api.jamendo.com', '/v3.0$path', {
-                'client_id': kJamendoId,
-                'format': 'json',
-                'audioformat': 'mp32',
-                ...q,
-              });
 
           class Track {
             final String id;
@@ -224,14 +221,16 @@ jobs:
               );
             }
 
-            factory Track.fromJamendo(Map<String, dynamic> j, {String artist = '', String image = ''}) {
+            factory Track.fromArchive(Map<String, dynamic> j) {
+              final identifier = (j['identifier'] ?? '').toString();
+              final title = (j['title'] ?? 'Archive Audio').toString();
+              final creator = (j['creator'] ?? 'Archive Artist').toString();
               return Track(
-                id: 'jm-${j['id']}',
-                title: (j['name'] ?? 'Untitled').toString(),
-                artist: (j['artist_name'] ?? artist).toString(),
-                url: (j['audio'] ?? '').toString(),
-                artwork: (j['image'] ?? j['album_image'] ?? image).toString(),
-                canDownload: j['audiodownload_allowed'] != false,
+                id: 'arc-$identifier',
+                title: title,
+                artist: creator,
+                url: 'https://archive.org/download/$identifier/$identifier_01.mp3',
+                artwork: 'https://archive.org/services/img/$identifier',
               );
             }
 
@@ -255,9 +254,20 @@ jobs:
               .map((j) => Track.fromAudius(Map<String, dynamic>.from(j as Map)))
               .toList();
 
-          List<Track> jamendoTracks(List<dynamic> list, {String artist = '', String image = ''}) => list
+          List<Track> archiveTracks(List<dynamic> list) => list
               .whereType<Map>()
-              .map((j) => Track.fromJamendo(Map<String, dynamic>.from(j), artist: artist, image: image))
+              .map((j) {
+                final identifier = (j['identifier'] ?? '').toString();
+                final title = (j['title'] ?? 'Audio Track').toString();
+                final creator = (j['creator'] ?? 'Archive').toString();
+                return Track(
+                  id: 'arc-$identifier',
+                  title: title,
+                  artist: creator,
+                  url: 'https://archive.org/download/$identifier/$identifier.mp3',
+                  artwork: 'https://archive.org/services/img/$identifier',
+                );
+              })
               .where((t) => t.url.isNotEmpty)
               .toList();
 
@@ -451,12 +461,6 @@ jobs:
           }
 
           Future<List<Track>> loadArtistTracks(FollowedArtist a) async {
-            if (a.source == 'jamendo') {
-              final r = await getList(jamendoUri('/artists/tracks/', {'id': a.id}));
-              if (r.isEmpty || r.first is! Map) return <Track>[];
-              final tr = ((r.first as Map)['tracks'] as List?) ?? [];
-              return jamendoTracks(tr, artist: a.name, image: a.image);
-            }
             final r = await getList(Uri.parse('$kApiBase/users/${a.id}/tracks').replace(queryParameters: {'app_name': kAppName, 'limit': '100'}));
             return audiusTracks(r);
           }
@@ -1312,7 +1316,7 @@ jobs:
             final TextEditingController _ctrl = TextEditingController();
             final stt.SpeechToText _speech = stt.SpeechToText();
             bool _listening = false;
-            int _source = 0; // 0 Audius, 1 Jamendo, 2 Spotify
+            int _source = 0; // 0 Audius, 1 Archive, 2 Spotify
             int _mode = 0; // 0 songs, 1 artists, 2 albums
             List<SearchItem> _items = [];
             bool _loading = false;
@@ -1383,7 +1387,7 @@ jobs:
               try {
                 List<SearchItem> items;
                 if (_source == 1) {
-                  items = await _jamendo(q);
+                  items = await _archive(q);
                 } else if (_source == 2) {
                   items = await _spotify(q);
                 } else {
@@ -1438,53 +1442,16 @@ jobs:
               }).toList();
             }
 
-            Future<List<SearchItem>> _jamendo(String q) async {
-              if (q.isEmpty) {
-                final list = await getList(jamendoUri('/tracks/', {'order': 'popularity_week', 'limit': '30'}));
-                return jamendoTracks(list).map(_songItem).toList();
-              }
-              if (_mode == 0) {
-                final list = await getList(jamendoUri('/tracks/', {'search': q, 'limit': '30'}));
-                return jamendoTracks(list).map(_songItem).toList();
-              }
-              if (_mode == 1) {
-                final list = await getList(jamendoUri('/artists/', {'namesearch': q, 'limit': '20'}));
-                return list.whereType<Map>().map<SearchItem>((a) {
-                  final id = a['id'].toString();
-                  final name = (a['name'] ?? '').toString();
-                  final image = (a['image'] ?? '').toString();
-                  return SearchItem(
-                    title: name,
-                    subtitle: 'Artist',
-                    image: image,
-                    round: true,
-                    follow: FollowedArtist(source: 'jamendo', id: id, name: name, image: image),
-                    loader: () async {
-                      final r = await getList(jamendoUri('/artists/tracks/', {'id': id}));
-                      if (r.isEmpty || r.first is! Map) return <Track>[];
-                      final tr = ((r.first as Map)['tracks'] as List?) ?? [];
-                      return jamendoTracks(tr, artist: name, image: image);
-                    },
-                  );
-                }).toList();
-              }
-              final list = await getList(jamendoUri('/albums/', {'namesearch': q, 'limit': '20'}));
-              return list.whereType<Map>().map<SearchItem>((a) {
-                final id = a['id'].toString();
-                final artist = (a['artist_name'] ?? '').toString();
-                final image = (a['image'] ?? '').toString();
-                return SearchItem(
-                  title: (a['name'] ?? 'Untitled').toString(),
-                  subtitle: 'Album - $artist',
-                  image: image,
-                  loader: () async {
-                    final r = await getList(jamendoUri('/albums/tracks/', {'id': id}));
-                    if (r.isEmpty || r.first is! Map) return <Track>[];
-                    final tr = ((r.first as Map)['tracks'] as List?) ?? [];
-                    return jamendoTracks(tr, artist: artist, image: image);
-                  },
-                );
-              }).toList();
+            Future<List<SearchItem>> _archive(String q) async {
+              final queryStr = q.isEmpty ? 'mediatype:audio' : 'mediatype:audio AND ($q)';
+              final uri = Uri.parse(kArchiveBase).replace(queryParameters: {
+                'q': queryStr,
+                'fl[]': 'identifier,title,creator',
+                'rows': '30',
+                'output': 'json',
+              });
+              final list = await getList(uri);
+              return archiveTracks(list).map(_songItem).toList();
             }
 
             Future<List<SearchItem>> _spotify(String q) async {
@@ -1600,7 +1567,7 @@ jobs:
                     Wrap(
                       spacing: 8,
                       children: [
-                        for (final e in const ['Audius', 'Jamendo', 'Spotify'].asMap().entries)
+                        for (final e in const ['Audius', 'Archive', 'Spotify'].asMap().entries)
                           ChoiceChip(
                             label: Text(e.value),
                             selected: _source == e.key,
@@ -2572,8 +2539,7 @@ jobs:
 
           flutter pub get
           flutter build apk --release \
-            --dart-define=SPOTIFY_CLIENT_ID="$SPOTIFY_CLIENT_ID" \
-            --dart-define=JAMENDO_CLIENT_ID="$JAMENDO_CLIENT_ID"
+            --dart-define=SPOTIFY_CLIENT_ID="$SPOTIFY_CLIENT_ID"
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
