@@ -32,6 +32,19 @@ jobs:
         run: |
           flutter create app_project --org com.musicradio --platforms=android
           cd app_project
+      - name: Generate and Build App
+        env:
+          SPOTIFY_CLIENT_ID: ${{ secrets.SPOTIFY_CLIENT_ID }}
+          JAMENDO_CLIENT_ID: ${{ secrets.JAMENDO_CLIENT_ID }}
+        run: |
+          flutter create app_project --org com.musicradio --platforms=android
+          cd app_project
+
+          echo "android.disableResourceValidation=true" >> android/gradle.properties
+          echo "android.useAndroidX=true" >> android/gradle.properties
+          echo "android.enableJetifier=true" >> android/gradle.properties
+
+          cat << 'EOF' > pubspec.yaml
 
           cat << 'EOF' > pubspec.yaml
           name: music_radio_app
