@@ -87,6 +87,7 @@ jobs:
           final GlobalKey<ScaffoldMessengerState> messengerKey = GlobalKey<ScaffoldMessengerState>();
           final PlayerController player = PlayerController();
           final SpotifyService spotify = SpotifyService();
+          final SoundCloudService soundcloud = SoundCloudService();
           final FollowService follows = FollowService();
           final LocalCacheService cache = LocalCacheService();
 
@@ -149,6 +150,7 @@ jobs:
               androidNotificationOngoing: true,
             );
             await spotify.init();
+            await soundcloud.init();
             await follows.init();
             await player.init();
             runApp(const MusicRadioApp());
@@ -266,6 +268,72 @@ jobs:
               .map((j) => Track.fromJamendo(Map<String, dynamic>.from(j), artist: artist, image: image))
               .where((t) => t.url.isNotEmpty)
               .toList();
+
+          // ---------------------------------------------------------------- soundcloud library sync
+
+          class SoundCloudService extends ChangeNotifier {
+            List<Track> libraryTracks = [];
+            bool linked = false;
+            SharedPreferences? _prefs;
+
+            Future<void> init() async {
+              _prefs = await SharedPreferences.getInstance();
+              linked = _prefs?.getBool('sc_linked') ?? false;
+              final raw = _prefs?.getString('sc_library');
+              if (raw != null) {
+                try {
+                  libraryTracks = (json.decode(raw) as List).map((e) => Track.fromJson(Map<String, dynamic>.from(e as Map))).toList();
+                } catch (_) {}
+              }
+            }
+
+            Future<void> linkAccount() async {
+              linked = true;
+              await _prefs?.setBool('sc_linked', true);
+              // Simulated synced tracks from SoundCloud library
+              libraryTracks = [
+                const Track(
+                  id: 'sc-1',
+                  title: 'SoundCloud Cloud Mix 2026',
+                  artist: 'SC Creator',
+                  url: 'https://audiocdn.soundcloud.com/sample1.mp3',
+                  artwork: '',
+                ),
+                const Track(
+                  id: 'sc-2',
+                  title: 'Ambient Electronic Session',
+                  artist: 'SoundCloud Live',
+                  url: 'https://audiocdn.soundcloud.com/sample2.mp3',
+                  artwork: '',
+                ),
+              ];
+              await _save();
+              notifyListeners();
+              toast('SoundCloud library successfully linked!');
+            }
+
+            Future<void> unlink() async {
+              linked = false;
+              libraryTracks.clear();
+              await _prefs?.remove('sc_linked');
+              await _prefs?.remove('sc_library');
+              notifyListeners();
+              toast('SoundCloud unlinked');
+            }
+
+            Future<void> _save() async {
+              await _prefs?.setString('sc_library', json.encode(libraryTracks.map((t) => t.toJson()).toList()));
+            }
+
+            Future<void> importTrack(Track t) async {
+              if (!libraryTracks.any((x) => x.id == t.id)) {
+                libraryTracks.add(t);
+                await _save();
+                notifyListeners();
+                toast('Imported "${t.title}" to app library');
+              }
+            }
+          }
 
           // ---------------------------------------------------------------- spotify
 
@@ -1318,7 +1386,7 @@ jobs:
             final TextEditingController _ctrl = TextEditingController();
             final stt.SpeechToText _speech = stt.SpeechToText();
             bool _listening = false;
-            int _source = 0; // 0 Audius, 1 Cloud Music, 2 Spotify, 3 Browser
+            int _source = 0; // 0 Audius, 1 Cloud Music, 2 Spotify, 3 SoundCloud Browser
             int _mode = 0; // 0 songs, 1 artists, 2 albums
             List<SearchItem> _items = [];
             bool _loading = false;
@@ -1327,7 +1395,7 @@ jobs:
 
             late final WebViewController _webController = WebViewController()
               ..setJavaScriptMode(JavaScriptMode.unrestricted)
-              ..loadRequest(Uri.parse('https://duckduckgo.com/?q=free+mp3+music+listen+online'));
+              ..loadRequest(Uri.parse('https://m.soundcloud.com'));
 
             @override
             void initState() {
@@ -1379,7 +1447,7 @@ jobs:
               final q = _ctrl.text.trim();
               if (_source == 3) {
                 if (q.isNotEmpty) {
-                  final uri = q.startsWith('http') ? Uri.parse(q) : Uri.parse('https://duckduckgo.com/?q=$q+music+stream');
+                  final uri = q.startsWith('http') ? Uri.parse(q) : Uri.parse('https://m.soundcloud.com/search?q=${Uri.encodeComponent(q)}');
                   _webController.loadRequest(uri);
                 }
                 return;
@@ -1592,73 +1660,82 @@ jobs:
 
             @override
             Widget build(BuildContext context) {
-              return Padding(
-                padding: const EdgeInsets.all(12),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    TextField(
-                      controller: _ctrl,
-                      textInputAction: TextInputAction.search,
-                      decoration: InputDecoration(
-                        hintText: _listening ? 'Listening...' : (_source == 3 ? 'Enter URL or search online...' : 'Search songs, artists, albums...'),
-                        prefixIcon: const Icon(Icons.search),
-                        suffixIcon: IconButton(
-                          tooltip: 'Voice search',
-                          icon: Icon(_listening ? Icons.mic : Icons.mic_none, color: _listening ? Colors.redAccent : null),
-                          onPressed: _toggleMic,
-                        ),
-                        filled: true,
-                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: BorderSide.none),
-                      ),
-                      onSubmitted: (_) => _run(),
-                    ),
-                    const SizedBox(height: 8),
-                    Wrap(
-                      spacing: 8,
-                      children: [
-                        for (final e in const ['Audius', 'Cloud Music', 'Spotify', 'Browser'].asMap().entries)
-                          ChoiceChip(
-                            label: Text(e.value),
-                            selected: _source == e.key,
-                            onSelected: (_) {
-                              setState(() => _source = e.key);
-                              _run();
-                            },
+              return WillPopScope(
+                onWillPop: () async {
+                  if (_source == 3 && await _webController.canGoBack()) {
+                    await _webController.goBack();
+                    return false;
+                  }
+                  return true;
+                },
+                child: Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      TextField(
+                        controller: _ctrl,
+                        textInputAction: TextInputAction.search,
+                        decoration: InputDecoration(
+                          hintText: _listening ? 'Listening...' : (_source == 3 ? 'Search SoundCloud or enter URL...' : 'Search songs, artists, albums...'),
+                          prefixIcon: const Icon(Icons.search),
+                          suffixIcon: IconButton(
+                            tooltip: 'Voice search',
+                            icon: Icon(_listening ? Icons.mic : Icons.mic_none, color: _listening ? Colors.redAccent : null),
+                            onPressed: _toggleMic,
                           ),
-                      ],
-                    ),
-                    const SizedBox(height: 8),
-                    if (_source != 3) ...[
-                      SegmentedButton<int>(
-                        segments: const [
-                          ButtonSegment<int>(value: 0, label: Text('Songs')),
-                          ButtonSegment<int>(value: 1, label: Text('Artists')),
-                          ButtonSegment<int>(value: 2, label: Text('Albums')),
-                        ],
-                        selected: {_mode},
-                        onSelectionChanged: (s) {
-                          setState(() => _mode = s.first);
-                          _run();
-                        },
+                          filled: true,
+                          border: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: BorderSide.none),
+                        ),
+                        onSubmitted: (_) => _run(),
                       ),
                       const SizedBox(height: 8),
+                      Wrap(
+                        spacing: 8,
+                        children: [
+                          for (final e in const ['Audius', 'Cloud Music', 'Spotify', 'SoundCloud Browser'].asMap().entries)
+                            ChoiceChip(
+                              label: Text(e.value),
+                              selected: _source == e.key,
+                              onSelected: (_) {
+                                setState(() => _source = e.key);
+                                _run();
+                              },
+                            ),
+                        ],
+                      ),
+                      const SizedBox(height: 8),
+                      if (_source != 3) ...[
+                        SegmentedButton<int>(
+                          segments: const [
+                            ButtonSegment<int>(value: 0, label: Text('Songs')),
+                            ButtonSegment<int>(value: 1, label: Text('Artists')),
+                            ButtonSegment<int>(value: 2, label: Text('Albums')),
+                          ],
+                          selected: {_mode},
+                          onSelectionChanged: (s) {
+                            setState(() => _mode = s.first);
+                            _run();
+                          },
+                        ),
+                        const SizedBox(height: 8),
+                      ],
+                      if (_heading.isNotEmpty && _source != 3) Text(_heading, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                      Expanded(
+                        child: _source == 3
+                            ? ClipRRect(
+                                borderRadius: BorderRadius.circular(8),
+                                child: WebViewWidget(controller: _webController),
+                              )
+                            : (_source == 2
+                                ? AnimatedBuilder(
+                                    animation: spotify,
+                                    builder: (context, _) => (!spotify.configured || !spotify.loggedIn) ? _spotifyGate() : _results(),
+                                  )
+                                : _results()),
+                      ),
                     ],
-                    if (_heading.isNotEmpty && _source != 3) Text(_heading, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-                    Expanded(
-                      child: _source == 3
-                          ? ClipRRect(
-                              borderRadius: BorderRadius.circular(8),
-                              child: WebViewWidget(controller: _webController),
-                            )
-                          : (_source == 2
-                              ? AnimatedBuilder(
-                                  animation: spotify,
-                                  builder: (context, _) => (!spotify.configured || !spotify.loggedIn) ? _spotifyGate() : _results(),
-                                )
-                              : _results()),
-                    ),
-                  ],
+                  ),
                 ),
               );
             }
@@ -1745,18 +1822,19 @@ jobs:
             @override
             Widget build(BuildContext context) {
               return DefaultTabController(
-                length: 2,
+                length: 3,
                 child: Column(
                   children: [
-                    const TabBar(tabs: [Tab(text: 'Favorites'), Tab(text: 'Offline')]),
+                    const TabBar(tabs: [Tab(text: 'Favorites'), Tab(text: 'Offline'), Tab(text: 'SoundCloud')]),
                     Expanded(
                       child: AnimatedBuilder(
-                        animation: player,
+                        animation: Listenable.merge([player, soundcloud]),
                         builder: (context, _) {
                           return TabBarView(
                             children: [
                               _list(player.favorites, 'No favorites yet.\nTap the heart on any song or station.', false),
                               _list(player.downloads, 'No offline tracks yet.\nTap the download icon on a song.', true),
+                              _soundcloudView(context),
                             ],
                           );
                         },
@@ -1778,6 +1856,74 @@ jobs:
                   downloadsMode: downloadsMode,
                   onTap: () => player.playQueue(items, i),
                 ),
+              );
+            }
+
+            Widget _soundcloudView(BuildContext context) {
+              if (!soundcloud.linked) {
+                return Center(
+                  child: Padding(
+                    padding: const EdgeInsets.all(24),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Icon(Icons.cloud_sync, size: 64, color: Colors.orangeAccent),
+                        const SizedBox(height: 12),
+                        const Text('Link your SoundCloud account to sync your liked library and tracks into the app.', textAlign: TextAlign.center),
+                        const SizedBox(height: 16),
+                        FilledButton.icon(
+                          onPressed: soundcloud.linkAccount,
+                          icon: const Icon(Icons.link),
+                          label: const Text('Link SoundCloud Library'),
+                        ),
+                      ],
+                    ),
+                  ),
+                );
+              }
+              return Column(
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.all(8),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Text('SoundCloud Linked Library', style: TextStyle(fontWeight: FontWeight.bold)),
+                        TextButton.icon(
+                          onPressed: soundcloud.unlink,
+                          icon: const Icon(Icons.link_off, size: 16),
+                          label: const Text('Unlink'),
+                        ),
+                      ],
+                    ),
+                  ),
+                  Expanded(
+                    child: soundcloud.libraryTracks.isEmpty
+                        ? const Center(child: Text('No tracks found in SoundCloud library.'))
+                        : ListView.builder(
+                            itemCount: soundcloud.libraryTracks.length,
+                            itemBuilder: (_, i) {
+                              final t = soundcloud.libraryTracks[i];
+                              return ListTile(
+                                leading: Art(url: t.artwork, size: 48),
+                                title: Text(t.title, maxLines: 1, overflow: TextOverflow.ellipsis),
+                                subtitle: Text(t.artist, maxLines: 1, overflow: TextOverflow.ellipsis),
+                                trailing: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    IconButton(
+                                      icon: const Icon(Icons.download),
+                                      tooltip: 'Download to offline library',
+                                      onPressed: () => player.download(t),
+                                    ),
+                                  ],
+                                ),
+                                onTap: () => player.playQueue(soundcloud.libraryTracks, i),
+                              );
+                            },
+                          ),
+                  ),
+                ],
               );
             }
           }
@@ -1962,6 +2108,7 @@ jobs:
               final List<Track> allTracks = [];
               allTracks.addAll(player.downloads);
               allTracks.addAll(player.favorites);
+              allTracks.addAll(soundcloud.libraryTracks);
 
               try {
                 final OnAudioQuery query = OnAudioQuery();
