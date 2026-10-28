@@ -31,10 +31,10 @@ jobs:
           JAMENDO_CLIENT_ID: ${{ secrets.JAMENDO_CLIENT_ID }}
         run: |
           flutter create app_project --org com.musicradio --platforms=android
-          cp app/pubspec.yaml app_project/pubspec.yaml
-          cp app/main.dart app_project/lib/main.dart
+          cp mobile_app/pubspec.yaml app_project/pubspec.yaml
+          cp mobile_app/main.dart app_project/lib/main.dart
           cd app_project
-          python3 ../app/patch.py
+          python3 ../mobile_app/patch.py
           flutter pub get
           flutter build apk --release \
             --dart-define=SPOTIFY_CLIENT_ID="$SPOTIFY_CLIENT_ID" \
