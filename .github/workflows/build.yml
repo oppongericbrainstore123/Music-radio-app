@@ -221,19 +221,6 @@ jobs:
               );
             }
 
-            factory Track.fromArchive(Map<String, dynamic> j) {
-              final identifier = (j['identifier'] ?? '').toString();
-              final title = (j['title'] ?? 'Archive Audio').toString();
-              final creator = (j['creator'] ?? 'Archive Artist').toString();
-              return Track(
-                id: 'arc-$identifier',
-                title: title,
-                artist: creator,
-                url: 'https://archive.org/download/$identifier/$identifier_01.mp3',
-                artwork: 'https://archive.org/services/img/$identifier',
-              );
-            }
-
             factory Track.fromSpotify(Map<String, dynamic> j, {String image = ''}) {
               final artists = j['artists'];
               final album = j['album'];
@@ -264,7 +251,7 @@ jobs:
                   id: 'arc-$identifier',
                   title: title,
                   artist: creator,
-                  url: 'https://archive.org/download/$identifier/$identifier.mp3',
+                  url: 'https://archive.org/download/$identifier/${identifier}.mp3',
                   artwork: 'https://archive.org/services/img/$identifier',
                 );
               })
