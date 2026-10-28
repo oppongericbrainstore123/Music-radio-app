@@ -31,10 +31,14 @@ jobs:
           JAMENDO_CLIENT_ID: ${{ secrets.JAMENDO_CLIENT_ID }}
         run: |
           flutter create app_project --org com.musicradio --platforms=android
-          cp mobile_app/pubspec.yaml app_project/pubspec.yaml
-          cp mobile_app/main.dart app_project/lib/main.dart
+          MAIN=$(find mobile_app -name main.dart | head -n 1)
+          PUB=$(find mobile_app -name pubspec.yaml | head -n 1)
+          PATCH=$(find mobile_app -name patch.py | head -n 1)
+          echo "Using: $MAIN | $PUB | $PATCH"
+          cp "$PUB" app_project/pubspec.yaml
+          cp "$MAIN" app_project/lib/main.dart
           cd app_project
-          python3 ../mobile_app/patch.py
+          python3 "../$PATCH"
           flutter pub get
           flutter build apk --release \
             --dart-define=SPOTIFY_CLIENT_ID="$SPOTIFY_CLIENT_ID" \
