@@ -212,9 +212,9 @@ jobs:
             factory Track.fromJamendo(Map<String, dynamic> j, {String artist = '', String image = ''}) {
               return Track(
                 id: 'jm-${j['id']}',
-                title: (j['name'] ?? 'Untitled Track').toString(),
+                title: (j['name'] ?? j['title'] ?? 'Untitled Track').toString(),
                 artist: (j['artist_name'] ?? artist).toString(),
-                url: (j['audio'] ?? '').toString(),
+                url: (j['audio'] ?? j['audiodownload'] ?? '').toString(),
                 artwork: (j['image'] ?? j['album_image'] ?? image).toString(),
                 canDownload: j['audiodownload_allowed'] != false,
               );
@@ -1092,7 +1092,7 @@ jobs:
             final TextEditingController _ctrl = TextEditingController();
             final stt.SpeechToText _speech = stt.SpeechToText();
             bool _listening = false;
-            int _source = 0;
+            int _source = 0; // 0 Audius, 1 Cloud Music, 2 SoundCloud
             int _mode = 0;
             List<SearchItem> _items = [];
             bool _loading = false;
