@@ -60,14 +60,2326 @@ jobs:
           EOF
 
           mkdir -p lib
-          curl -sL https://raw.githubusercontent.com/oppongericbrainstore123/MusicRadioHub/main/lib/main.dart -o lib/main.dart || true
+          cat << 'EOF' > lib/main.dart
+          import 'dart:async';
+          import 'dart:convert';
+          import 'dart:io';
 
-          if [ ! -s lib/main.dart ]; then
-            python3 -c "
-            with open('lib/main.dart', 'w') as f:
-                f.write('''import 'dart:async';\nimport 'dart:convert';\nimport 'dart:io';\nimport 'package:flutter/material.dart';\nimport 'package:http/http.dart' as http;\nimport 'package:just_audio/just_audio.dart';\nimport 'package:just_audio_background/just_audio_background.dart';\nimport 'package:on_audio_query/on_audio_query.dart';\nimport 'package:path_provider/path_provider.dart';\nimport 'package:shared_preferences/shared_preferences.dart';\nimport 'package:speech_to_text/speech_to_text.dart' as stt;\nimport 'package:webview_flutter/webview_flutter.dart';\n\nvoid main() { runApp(MaterialApp(home: Scaffold(body: Center(child: Text('Music & Radio Hub'))))); }\n''')
-            "
-          fi
+          import 'package:flutter/material.dart';
+          import 'package:http/http.dart' as http;
+          import 'package:just_audio/just_audio.dart';
+          import 'package:just_audio_background/just_audio_background.dart';
+          import 'package:on_audio_query/on_audio_query.dart';
+          import 'package:path_provider/path_provider.dart';
+          import 'package:shared_preferences/shared_preferences.dart';
+          import 'package:speech_to_text/speech_to_text.dart' as stt;
+          import 'package:webview_flutter/webview_flutter.dart';
+
+          const String kAppName = 'MusicRadioHub';
+          const String kApiBase = 'https://api.audius.co/v1';
+          const String kJamendoId = '5c8a0024';
+          const String kSoundCloudClientId = 'a3250268a7356230bfdf26880ea77fcd';
+
+          final GlobalKey<ScaffoldMessengerState> messengerKey = GlobalKey<ScaffoldMessengerState>();
+          final PlayerController player = PlayerController();
+          final SoundCloudService soundcloud = SoundCloudService();
+          final FollowService follows = FollowService();
+          final LocalCacheService cache = LocalCacheService();
+
+          void toast(String message) {
+            messengerKey.currentState
+              ?..hideCurrentSnackBar()
+              ..showSnackBar(SnackBar(content: Text(message)));
+          }
+
+          String imgOf(dynamic m) {
+            if (m is Map) {
+              return (m['480x480'] ?? m['1000x1000'] ?? m['150x150'] ?? '').toString();
+            }
+            return '';
+          }
+
+          String fmt(Duration d) {
+            String two(int n) => n.toString().padLeft(2, '0');
+            final h = d.inHours;
+            final m = two(d.inMinutes.remainder(60));
+            final s = two(d.inSeconds.remainder(60));
+            return h > 0 ? '$h:$m:$s' : '$m:$s';
+          }
+
+          class LocalCacheService {
+            SharedPreferences? _prefs;
+            final Map<String, dynamic> _mem = {};
+
+            Future<void> init() async {
+              _prefs = await SharedPreferences.getInstance();
+            }
+
+            Future<List<dynamic>> getCachedList(Uri uri, {String? offlineKey}) async {
+              final key = uri.toString();
+              if (_mem.containsKey(key)) return _mem[key];
+              try {
+                final res = await http.get(uri, headers: {'User-Agent': 'MusicRadioHub/1.0'}).timeout(const Duration(seconds: 10));
+                if (res.statusCode == 200) {
+                  final body = json.decode(res.body);
+                  List<dynamic> list = [];
+                  if (body is List) {
+                    list = body;
+                  } else {
+                    final d = (body is Map) ? (body['data'] ?? body['results'] ?? body['response']) : null;
+                    if (d is Map && d['docs'] is List) {
+                      list = d['docs'] as List;
+                    } else if (d is List) {
+                      list = d;
+                    }
+                  }
+                  _mem[key] = list;
+                  if (offlineKey != null && _prefs != null) {
+                    await _prefs?.setString('cache_$offlineKey', json.encode(list));
+                  }
+                  return list;
+                }
+              } catch (_) {}
+
+              if (offlineKey != null && _prefs != null) {
+                final cachedRaw = _prefs?.getString('cache_$offlineKey');
+                if (cachedRaw != null) {
+                  try {
+                    final decoded = json.decode(cachedRaw);
+                    if (decoded is List) return decoded;
+                  } catch (_) {}
+                }
+              }
+              return [];
+            }
+          }
+
+          Future<List<dynamic>> getList(Uri uri, {String? offlineKey}) async => cache.getCachedList(uri, offlineKey: offlineKey);
+
+          Future<void> main() async {
+            WidgetsFlutterBinding.ensureInitialized();
+            await JustAudioBackground.init(
+              androidNotificationChannelId: 'com.musicradio.channel.audio',
+              androidNotificationChannelName: 'Audio playback',
+              androidNotificationOngoing: true,
+            );
+            await cache.init();
+            await soundcloud.init();
+            await follows.init();
+            await player.init();
+            runApp(const MusicRadioApp());
+          }
+
+          Uri jamendoUri(String path, Map<String, String> q) => Uri.https('api.jamendo.com', '/v3.0$path', {
+                'client_id': kJamendoId,
+                'format': 'json',
+                'audioformat': 'mp32',
+                ...q,
+              });
+
+          class Track {
+            final String id;
+            final String title;
+            final String artist;
+            final String url;
+            final String artwork;
+            final bool isLocal;
+            final bool isLive;
+            final bool canDownload;
+
+            const Track({
+              required this.id,
+              required this.title,
+              required this.artist,
+              required this.url,
+              this.artwork = '',
+              this.isLocal = false,
+              this.isLive = false,
+              this.canDownload = true,
+            });
+
+            Map<String, dynamic> toJson() => {
+                  'id': id,
+                  'title': title,
+                  'artist': artist,
+                  'url': url,
+                  'artwork': artwork,
+                  'isLocal': isLocal,
+                  'isLive': isLive,
+                  'canDownload': canDownload,
+                };
+
+            factory Track.fromJson(Map<String, dynamic> j) => Track(
+                  id: (j['id'] ?? '').toString(),
+                  title: (j['title'] ?? 'Untitled Track').toString(),
+                  artist: (j['artist'] ?? 'Unknown Artist').toString(),
+                  url: (j['url'] ?? '').toString(),
+                  artwork: (j['artwork'] ?? '').toString(),
+                  isLocal: j['isLocal'] == true,
+                  isLive: j['isLive'] == true,
+                  canDownload: j['canDownload'] != false,
+                );
+
+            factory Track.fromAudius(Map<String, dynamic> j) {
+              final id = j['id'].toString();
+              final user = j['user'];
+              final tTitle = (j['title'] ?? '').toString();
+              return Track(
+                id: 'audius-$id',
+                title: tTitle.isEmpty ? 'Audius Track $id' : tTitle,
+                artist: user is Map ? (user['name'] ?? 'Audius Artist').toString() : 'Audius Artist',
+                url: '$kApiBase/tracks/$id/stream?app_name=$kAppName',
+                artwork: imgOf(j['artwork']),
+              );
+            }
+
+            factory Track.fromJamendo(Map<String, dynamic> j, {String artist = '', String image = ''}) {
+              final name = (j['name'] ?? '').toString();
+              return Track(
+                id: 'jm-${j['id']}',
+                title: name.isEmpty ? 'Cloud Track' : name,
+                artist: (j['artist_name'] ?? artist).toString(),
+                url: (j['audio'] ?? '').toString(),
+                artwork: (j['image'] ?? j['album_image'] ?? image).toString(),
+                canDownload: j['audiodownload_allowed'] != false,
+              );
+            }
+
+            factory Track.fromSoundCloud(Map<String, dynamic> j) {
+              final id = j['id'].toString();
+              final user = j['user'];
+              final tTitle = (j['title'] ?? '').toString();
+              final artworkUrl = (j['artwork_url'] ?? (user is Map ? user['avatar_url'] : '') ?? '').toString();
+              final highResArtwork = artworkUrl.replaceAll('large.jpg', 't500x500.jpg');
+              final streamUrl = j['stream_url'] != null 
+                  ? '${j['stream_url']}?client_id=$kSoundCloudClientId'
+                  : 'https://api.soundcloud.com/tracks/$id/stream?client_id=$kSoundCloudClientId';
+
+              return Track(
+                id: 'sc-$id',
+                title: tTitle.isEmpty ? 'SoundCloud Track $id' : tTitle,
+                artist: user is Map ? (user['username'] ?? 'SoundCloud Creator').toString() : 'SoundCloud Creator',
+                url: streamUrl,
+                artwork: highResArtwork,
+              );
+            }
+          }
+
+          List<Track> audiusTracks(List<dynamic> list) => list
+              .where((j) => j is Map && j['is_streamable'] != false)
+              .map((j) => Track.fromAudius(Map<String, dynamic>.from(j as Map)))
+              .toList();
+
+          List<Track> jamendoTracks(List<dynamic> list, {String artist = '', String image = ''}) => list
+              .whereType()
+              .map((j) => Track.fromJamendo(Map<String, dynamic>.from(j), artist: artist, image: image))
+              .where((t) => t.url.isNotEmpty)
+              .toList();
+
+          class SoundCloudService extends ChangeNotifier {
+            List<Track> libraryTracks = [];
+            List<Track> searchResults = [];
+            bool linked = false;
+            bool searching = false;
+            SharedPreferences? _prefs;
+
+            Future<void> init() async {
+              _prefs = await SharedPreferences.getInstance();
+              linked = _prefs?.getBool('sc_linked') ?? false;
+              final raw = _prefs?.getString('sc_library');
+              if (raw != null) {
+                try {
+                  libraryTracks = (json.decode(raw) as List).map((e) => Track.fromJson(Map<String, dynamic>.from(e as Map))).toList();
+                } catch (_) {}
+              }
+            }
+
+            Future<void> search(String query) async {
+              if (query.isEmpty) {
+                searchResults = [];
+                notifyListeners();
+                return;
+              }
+              searching = true;
+              notifyListeners();
+              try {
+                final uri = Uri.parse('https://api.soundcloud.com/tracks').replace(queryParameters: {
+                  'client_id': kSoundCloudClientId,
+                  'q': query,
+                  'limit': '30',
+                });
+                final res = await http.get(uri);
+                if (res.statusCode == 200) {
+                  final list = json.decode(res.body) as List;
+                  searchResults = list.whereType().map((m) => Track.fromSoundCloud(Map<String, dynamic>.from(m))).toList();
+                }
+              } catch (_) {}
+              searching = false;
+              notifyListeners();
+            }
+
+            Future<void> linkAccount() async {
+              linked = true;
+              await _prefs?.setBool('sc_linked', true);
+              try {
+                final uri = Uri.parse('https://api.soundcloud.com/tracks').replace(queryParameters: {
+                  'client_id': kSoundCloudClientId,
+                  'limit': '25',
+                });
+                final res = await http.get(uri);
+                if (res.statusCode == 200) {
+                  final list = json.decode(res.body) as List;
+                  libraryTracks = list.whereType().map((m) => Track.fromSoundCloud(Map<String, dynamic>.from(m))).toList();
+                  await _save();
+                }
+              } catch (_) {}
+              notifyListeners();
+              toast('SoundCloud library successfully linked!');
+            }
+
+            Future<void> unlink() async {
+              linked = false;
+              libraryTracks.clear();
+              await _prefs?.remove('sc_linked');
+              await _prefs?.remove('sc_library');
+              notifyListeners();
+              toast('SoundCloud unlinked');
+            }
+
+            Future<void> _save() async {
+              await _prefs?.setString('sc_library', json.encode(libraryTracks.map((t) => t.toJson()).toList()));
+            }
+
+            Future<void> importTrack(Track t) async {
+              if (!libraryTracks.any((x) => x.id == t.id)) {
+                libraryTracks.add(t);
+                await _save();
+                notifyListeners();
+                toast('Imported "${t.title}" to library');
+              }
+            }
+          }
+
+          class FollowedArtist {
+            final String source;
+            final String id;
+            final String name;
+            final String image;
+            const FollowedArtist({required this.source, required this.id, required this.name, this.image = ''});
+
+            Map<String, dynamic> toJson() => {'source': source, 'id': id, 'name': name, 'image': image};
+            factory FollowedArtist.fromJson(Map<String, dynamic> j) => FollowedArtist(
+                  source: (j['source'] ?? 'audius').toString(),
+                  id: (j['id'] ?? '').toString(),
+                  name: (j['name'] ?? '').toString(),
+                  image: (j['image'] ?? '').toString(),
+                );
+          }
+
+          class FollowService extends ChangeNotifier {
+            List<FollowedArtist> artists = [];
+            SharedPreferences? _prefs;
+
+            Future<void> init() async {
+              _prefs = await SharedPreferences.getInstance();
+              final raw = _prefs?.getString('followed');
+              if (raw != null) {
+                try {
+                  artists = (json.decode(raw) as List).map((e) => FollowedArtist.fromJson(Map<String, dynamic>.from(e as Map))).toList();
+                } catch (_) {}
+              }
+            }
+
+            bool isFollowing(FollowedArtist a) => artists.any((x) => x.source == a.source && x.id == a.id);
+
+            Future<void> toggle(FollowedArtist a) async {
+              if (isFollowing(a)) {
+                artists.removeWhere((x) => x.source == a.source && x.id == a.id);
+              } else {
+                artists.add(a);
+              }
+              notifyListeners();
+              await _prefs?.setString('followed', json.encode(artists.map((x) => x.toJson()).toList()));
+            }
+          }
+
+          Future<List<Track>> loadArtistTracks(FollowedArtist a) async {
+            if (a.source == 'jamendo') {
+              final r = await getList(jamendoUri('/artists/tracks/', {'id': a.id}), offlineKey: 'artist_${a.id}');
+              if (r.isEmpty || r.first is! Map) return <Track>[];
+              final tr = ((r.first as Map)['tracks'] as List?) ?? [];
+              return jamendoTracks(tr, artist: a.name, image: a.image);
+            }
+            final r = await getList(Uri.parse('$kApiBase/users/${a.id}/tracks').replace(queryParameters: {'app_name': kAppName, 'limit': '100'}), offlineKey: 'user_${a.id}');
+            return audiusTracks(r);
+          }
+
+          class PlayerController extends ChangeNotifier {
+            final AndroidEqualizer equalizer = AndroidEqualizer();
+            final AndroidLoudnessEnhancer loudness = AndroidLoudnessEnhancer();
+            late final AudioPlayer audio = AudioPlayer(
+              audioPipeline: AudioPipeline(androidAudioEffects: [loudness, equalizer]),
+            );
+            List<Track> queue = [];
+            int index = 0;
+            List<Track> favorites = [];
+            List<Track> downloads = [];
+            double speed = 1.0;
+            bool shuffle = false;
+            LoopMode loop = LoopMode.off;
+            DateTime? sleepEnd;
+            Timer? _sleepTimer;
+            SharedPreferences? _prefs;
+
+            Track? get current => (queue.isNotEmpty && index >= 0 && index < queue.length) ? queue[index] : null;
+            bool isFavorite(Track t) => favorites.any((f) => f.id == t.id);
+            bool isDownloaded(Track t) => downloads.any((d) => d.id == t.id);
+
+            Future<void> init() async {
+              _prefs = await SharedPreferences.getInstance();
+              favorites = _load('favorites');
+              downloads = _load('downloads').where((t) => File(t.url).existsSync()).toList();
+              audio.currentIndexStream.listen((i) {
+                if (i != null && i != index) {
+                  index = i;
+                  notifyListeners();
+                }
+              });
+              audio.playerStateStream.listen((_) => notifyListeners());
+            }
+
+            List<Track> _load(String key) {
+              final raw = _prefs?.getString(key);
+              if (raw == null) return [];
+              try {
+                return (json.decode(raw) as List).map((e) => Track.fromJson(Map<String, dynamic>.from(e as Map))).toList();
+              } catch (_) {
+                return [];
+              }
+            }
+
+            Future<void> _save(String key, List<Track> list) async {
+              await _prefs?.setString(key, json.encode(list.map((t) => t.toJson()).toList()));
+            }
+
+            Future<void> playQueue(List<Track> tracks, int start) async {
+              if (tracks.isEmpty || start < 0 || start >= tracks.length) return;
+              final resolved = tracks.map((t) {
+                final local = downloads.where((d) => d.id == t.id);
+                return local.isNotEmpty ? local.first : t;
+              }).toList();
+              queue = resolved;
+              index = start;
+              notifyListeners();
+              try {
+                final sources = <AudioSource>[];
+                for (var i = 0; i < resolved.length; i++) {
+                  final t = resolved[i];
+                  sources.add(AudioSource.uri(
+                    t.isLocal ? Uri.file(t.url) : Uri.parse(t.url),
+                    tag: MediaItem(
+                      id: '$i-${t.id}',
+                      title: t.title,
+                      artist: t.artist,
+                      artUri: t.artwork.isNotEmpty ? Uri.parse(t.artwork) : null,
+                    ),
+                  ));
+                }
+                await audio.setAudioSource(ConcatenatingAudioSource(children: sources), initialIndex: start);
+                await audio.setSpeed(speed);
+                audio.play();
+              } catch (e) {
+                toast('Could not play this item');
+              }
+            }
+
+            Future<void> togglePlay() async {
+              if (audio.playing) {
+                await audio.pause();
+              } else {
+                audio.play();
+              }
+            }
+
+            Future<void> next() async {
+              await audio.seekToNext();
+            }
+
+            Future<void> previous() async {
+              await audio.seekToPrevious();
+            }
+
+            Future<void> pauseAll() async {
+              await audio.pause();
+              notifyListeners();
+            }
+
+            Future<void> toggleFavorite(Track t) async {
+              if (isFavorite(t)) {
+                favorites.removeWhere((f) => f.id == t.id);
+              } else {
+                favorites.add(t);
+              }
+              notifyListeners();
+              await _save('favorites', favorites);
+            }
+
+            Future<void> download(Track t) async {
+              if (t.isLive || !t.canDownload) {
+                toast('This item can only be streamed');
+                return;
+              }
+              if (isDownloaded(t)) return;
+              toast('Downloading "${t.title}"...');
+              try {
+                final base = await getExternalStorageDirectory() ?? await getApplicationDocumentsDirectory();
+                final dir = Directory('${base.path}/Music');
+                if (!await dir.exists()) await dir.create(recursive: true);
+                final safe = t.title.replaceAll(RegExp(r'[^A-Za-z0-9 _-]'), '_');
+                final file = File('${dir.path}/${t.id.hashCode.abs()}_$safe.mp3');
+                final res = await http.get(Uri.parse(t.url)).timeout(const Duration(minutes: 5));
+                if (res.statusCode != 200) throw 'HTTP ${res.statusCode}';
+                await file.writeAsBytes(res.bodyBytes);
+                downloads.add(Track(
+                  id: t.id,
+                  title: t.title,
+                  artist: t.artist,
+                  url: file.path,
+                  artwork: t.artwork,
+                  isLocal: true,
+                ));
+                notifyListeners();
+                await _save('downloads', downloads);
+                toast('Saved for offline listening');
+              } catch (e) {
+                toast('Download failed');
+              }
+            }
+
+            Future<void> removeDownload(Track t) async {
+              try {
+                final f = File(t.url);
+                if (await f.exists()) await f.delete();
+              } catch (_) {}
+              downloads.removeWhere((d) => d.id == t.id);
+              notifyListeners();
+              await _save('downloads', downloads);
+            }
+
+            Future<void> toggleShuffle() async {
+              shuffle = !shuffle;
+              if (shuffle) await audio.shuffle();
+              await audio.setShuffleModeEnabled(shuffle);
+              notifyListeners();
+            }
+
+            Future<void> cycleLoop() async {
+              loop = loop == LoopMode.off ? LoopMode.all : (loop == LoopMode.all ? LoopMode.one : LoopMode.off);
+              await audio.setLoopMode(loop);
+              notifyListeners();
+            }
+
+            Future<void> setSpeed(double s) async {
+              speed = s;
+              await audio.setSpeed(s);
+              notifyListeners();
+            }
+
+            void setSleepTimer(int minutes) {
+              _sleepTimer?.cancel();
+              sleepEnd = null;
+              if (minutes > 0) {
+                sleepEnd = DateTime.now().add(Duration(minutes: minutes));
+                _sleepTimer = Timer(Duration(minutes: minutes), () {
+                  sleepEnd = null;
+                  pauseAll();
+                });
+                toast('Sleep timer: $minutes min');
+              } else {
+                toast('Sleep timer off');
+              }
+              notifyListeners();
+            }
+          }
+
+          class MusicRadioApp extends StatelessWidget {
+            const MusicRadioApp({super.key});
+
+            @override
+            Widget build(BuildContext context) {
+              return MaterialApp(
+                scaffoldMessengerKey: messengerKey,
+                title: 'Music & Radio Hub',
+                debugShowCheckedModeBanner: false,
+                theme: ThemeData(
+                  brightness: Brightness.dark,
+                  scaffoldBackgroundColor: const Color(0xFF121212),
+                  colorSchemeSeed: Colors.deepPurple,
+                  useMaterial3: true,
+                ),
+                home: const HomeScreen(),
+              );
+            }
+          }
+
+          class HomeScreen extends StatefulWidget {
+            const HomeScreen({super.key});
+
+            @override
+            State<HomeScreen> createState() => _HomeScreenState();
+          }
+
+          class _HomeScreenState extends State<HomeScreen> {
+            int _tab = 0;
+            static final List<Widget> _pages = [
+              const RadioTab(),
+              const DiscoverTab(),
+              const SearchTab(),
+              const LocalTab(),
+              const DjTab(),
+              const LibraryTab(),
+            ];
+
+            @override
+            Widget build(BuildContext context) {
+              return Scaffold(
+                appBar: AppBar(
+                  title: const Row(
+                    children: [
+                      Icon(Icons.music_note, color: Colors.greenAccent),
+                      SizedBox(width: 8),
+                      Text('Music & Radio Hub', style: TextStyle(fontWeight: FontWeight.bold)),
+                    ],
+                  ),
+                ),
+                body: Column(
+                  children: [
+                    Expanded(
+                      child: IndexedStack(
+                        index: _tab,
+                        children: _pages,
+                      ),
+                    ),
+                    const MiniPlayer(),
+                  ],
+                ),
+                bottomNavigationBar: NavigationBar(
+                  selectedIndex: _tab,
+                  onDestinationSelected: (i) => setState(() => _tab = i),
+                  destinations: const [
+                    NavigationDestination(icon: Icon(Icons.radio), label: 'Radio'),
+                    NavigationDestination(icon: Icon(Icons.explore), label: 'Discover'),
+                    NavigationDestination(icon: Icon(Icons.search), label: 'Search'),
+                    NavigationDestination(icon: Icon(Icons.phone_android), label: 'Device'),
+                    NavigationDestination(icon: Icon(Icons.album), label: 'DJ Studio'),
+                    NavigationDestination(icon: Icon(Icons.library_music), label: 'Library'),
+                  ],
+                ),
+              );
+            }
+          }
+
+          class Art extends StatelessWidget {
+            final String url;
+            final double size;
+            const Art({super.key, required this.url, this.size = 48});
+
+            @override
+            Widget build(BuildContext context) {
+              Widget placeholder() => Container(
+                    width: size,
+                    height: size,
+                    color: Colors.deepPurple.shade700,
+                    child: Icon(Icons.music_note, size: size * 0.5, color: Colors.white70),
+                  );
+              return ClipRRect(
+                borderRadius: BorderRadius.circular(8),
+                child: url.isEmpty
+                    ? placeholder()
+                    : Image.network(url, width: size, height: size, fit: BoxFit.cover, errorBuilder: (_, __, ___) => placeholder()),
+              );
+            }
+          }
+
+          class PlayPauseButton extends StatelessWidget {
+            final double size;
+            const PlayPauseButton({super.key, this.size = 36});
+
+            @override
+            Widget build(BuildContext context) {
+              return StreamBuilder<PlayerState>(
+                stream: player.audio.playerStateStream,
+                builder: (context, snap) {
+                  final st = snap.data;
+                  final loading = st?.processingState == ProcessingState.loading || st?.processingState == ProcessingState.buffering;
+                  final playing = st?.playing ?? false;
+                  if (loading) {
+                    return SizedBox(
+                      width: size + 16,
+                      height: size + 16,
+                      child: const Padding(padding: EdgeInsets.all(12), child: CircularProgressIndicator(strokeWidth: 3)),
+                    );
+                  }
+                  return IconButton(
+                    iconSize: size,
+                    icon: Icon(playing ? Icons.pause_circle_filled : Icons.play_circle_filled),
+                    onPressed: player.togglePlay,
+                  );
+                },
+              );
+            }
+          }
+
+          class TrackTile extends StatelessWidget {
+            final Track track;
+            final VoidCallback onTap;
+            final bool downloadsMode;
+            const TrackTile({super.key, required this.track, required this.onTap, this.downloadsMode = false});
+
+            @override
+            Widget build(BuildContext context) {
+              return AnimatedBuilder(
+                animation: player,
+                builder: (context, _) {
+                  final fav = player.isFavorite(track);
+                  final dl = player.isDownloaded(track);
+                  return ListTile(
+                    leading: Art(url: track.artwork, size: 48),
+                    title: Text(track.title, maxLines: 1, overflow: TextOverflow.ellipsis),
+                    subtitle: Text(track.artist, maxLines: 1, overflow: TextOverflow.ellipsis),
+                    onTap: onTap,
+                    trailing: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        IconButton(
+                          icon: Icon(fav ? Icons.favorite : Icons.favorite_border, color: fav ? Colors.redAccent : null),
+                          onPressed: () => player.toggleFavorite(track),
+                        ),
+                        if (downloadsMode)
+                          IconButton(icon: const Icon(Icons.delete_outline), onPressed: () => player.removeDownload(track))
+                        else if (!track.isLive && track.canDownload)
+                          IconButton(
+                            icon: Icon(dl ? Icons.download_done : Icons.download, color: dl ? Colors.greenAccent : null),
+                            onPressed: dl ? null : () => player.download(track),
+                          ),
+                      ],
+                    ),
+                  );
+                },
+              );
+            }
+          }
+
+          class MiniPlayer extends StatelessWidget {
+            const MiniPlayer({super.key});
+
+            @override
+            Widget build(BuildContext context) {
+              return AnimatedBuilder(
+                animation: player,
+                builder: (context, _) {
+                  final t = player.current;
+                  if (t == null) return const SizedBox.shrink();
+                  return Material(
+                    color: const Color(0xFF282828),
+                    child: InkWell(
+                      onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const PlayerScreen())),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                        child: Row(
+                          children: [
+                            Art(url: t.artwork, size: 44),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(t.title, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.bold)),
+                                  Text(t.artist, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 12, color: Colors.grey.shade400)),
+                                ],
+                              ),
+                            ),
+                            IconButton(icon: const Icon(Icons.skip_previous), onPressed: player.previous),
+                            const PlayPauseButton(size: 32),
+                            IconButton(icon: const Icon(Icons.skip_next), onPressed: player.next),
+                          ],
+                        ),
+                      ),
+                    ),
+                  );
+                },
+              );
+            }
+          }
+
+          class PlayerScreen extends StatelessWidget {
+            const PlayerScreen({super.key});
+
+            @override
+            Widget build(BuildContext context) {
+              return AnimatedBuilder(
+                animation: player,
+                builder: (context, _) {
+                  final t = player.current;
+                  if (t == null) {
+                    return Scaffold(appBar: AppBar(), body: const Center(child: Text('Nothing playing')));
+                  }
+                  final fav = player.isFavorite(t);
+                  final dl = player.isDownloaded(t);
+                  final canDl = !t.isLive && t.canDownload;
+                  return Scaffold(
+                    appBar: AppBar(
+                      leading: IconButton(icon: const Icon(Icons.keyboard_arrow_down, size: 32), onPressed: () => Navigator.of(context).pop()),
+                      title: const Text('Now Playing', style: TextStyle(fontSize: 14)),
+                      centerTitle: true,
+                      actions: [
+                        IconButton(
+                          icon: const Icon(Icons.equalizer),
+                          tooltip: 'Sound Studio',
+                          onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const EqualizerScreen())),
+                        ),
+                        IconButton(icon: const Icon(Icons.queue_music), onPressed: () => _showQueue(context)),
+                      ],
+                    ),
+                    body: SingleChildScrollView(
+                      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 8),
+                      child: Column(
+                        children: [
+                          Art(url: t.artwork, size: 260),
+                          const SizedBox(height: 16),
+                          Align(
+                            alignment: Alignment.centerLeft,
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(t.title, maxLines: 2, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+                                const SizedBox(height: 4),
+                                Text(t.artist, style: TextStyle(fontSize: 14, color: Colors.grey.shade400)),
+                              ],
+                            ),
+                          ),
+                          const SizedBox(height: 8),
+                          _seekBar(),
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                            children: [
+                              IconButton(
+                                icon: Icon(Icons.shuffle, color: player.shuffle ? Colors.greenAccent : null),
+                                onPressed: player.toggleShuffle,
+                              ),
+                              IconButton(iconSize: 36, icon: const Icon(Icons.skip_previous), onPressed: player.previous),
+                              const PlayPauseButton(size: 64),
+                              IconButton(iconSize: 36, icon: const Icon(Icons.skip_next), onPressed: player.next),
+                              IconButton(
+                                icon: Icon(player.loop == LoopMode.one ? Icons.repeat_one : Icons.repeat, color: player.loop != LoopMode.off ? Colors.greenAccent : null),
+                                onPressed: player.cycleLoop,
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 8),
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                            children: [
+                              IconButton(
+                                icon: Icon(fav ? Icons.favorite : Icons.favorite_border, color: fav ? Colors.redAccent : null),
+                                onPressed: () => player.toggleFavorite(t),
+                              ),
+                              if (canDl)
+                                IconButton(
+                                  icon: Icon(dl ? Icons.download_done : Icons.download, color: dl ? Colors.greenAccent : null),
+                                  onPressed: dl ? null : () => player.download(t),
+                                ),
+                              PopupMenuButton<double>(
+                                icon: Icon(Icons.speed, color: player.speed != 1.0 ? Colors.greenAccent : null),
+                                tooltip: 'Playback speed',
+                                onSelected: player.setSpeed,
+                                itemBuilder: (_) => [0.5, 0.75, 1.0, 1.25, 1.5, 2.0].map((s) => PopupMenuItem<double>(value: s, child: Text('${s}x'))).toList(),
+                              ),
+                              PopupMenuButton<int>(
+                                icon: Icon(Icons.bedtime, color: player.sleepEnd != null ? Colors.greenAccent : null),
+                                tooltip: 'Sleep timer',
+                                onSelected: player.setSleepTimer,
+                                itemBuilder: (_) => const [
+                                  PopupMenuItem<int>(value: 0, child: Text('Off')),
+                                  PopupMenuItem<int>(value: 15, child: Text('15 minutes')),
+                                  PopupMenuItem<int>(value: 30, child: Text('30 minutes')),
+                                  PopupMenuItem<int>(value: 60, child: Text('1 hour')),
+                                ],
+                              ),
+                            ],
+                          ),
+                          StreamBuilder<double>(
+                            stream: player.audio.volumeStream,
+                            builder: (context, snap) {
+                              final v = (snap.data ?? 1.0).clamp(0.0, 1.0).toDouble();
+                              return Row(
+                                children: [
+                                  const Icon(Icons.volume_down, size: 20),
+                                  Expanded(child: Slider(min: 0, max: 1, value: v, onChanged: player.audio.setVolume)),
+                                  const Icon(Icons.volume_up, size: 20),
+                                ],
+                              );
+                            },
+                          ),
+                        ],
+                      ),
+                    ),
+                  );
+                },
+              );
+            }
+
+            Widget _seekBar() {
+              return StreamBuilder<Duration?>(
+                stream: player.audio.durationStream,
+                builder: (context, ds) {
+                  final dur = ds.data ?? Duration.zero;
+                  return StreamBuilder<Duration>(
+                    stream: player.audio.positionStream,
+                    builder: (context, ps) {
+                      final pos = ps.data ?? Duration.zero;
+                      if (dur == Duration.zero) {
+                        return const Padding(padding: EdgeInsets.symmetric(vertical: 16), child: Text('LIVE / loading...'));
+                      }
+                      final max = dur.inMilliseconds.toDouble();
+                      final val = pos.inMilliseconds.toDouble().clamp(0.0, max).toDouble();
+                      return Column(
+                        children: [
+                          Slider(
+                            min: 0,
+                            max: max,
+                            value: val,
+                            onChanged: (v) => player.audio.seek(Duration(milliseconds: v.toInt())),
+                          ),
+                          Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 16),
+                            child: Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: [Text(fmt(pos)), Text(fmt(dur))],
+                            ),
+                          ),
+                        ],
+                      );
+                    },
+                  );
+                },
+              );
+            }
+
+            void _showQueue(BuildContext context) {
+              showModalBottomSheet<void>(
+                context: context,
+                builder: (ctx) => ListView.builder(
+                  itemCount: player.queue.length,
+                  itemBuilder: (_, i) {
+                    final t = player.queue[i];
+                    return ListTile(
+                      leading: Art(url: t.artwork, size: 40),
+                      title: Text(t.title, maxLines: 1, overflow: TextOverflow.ellipsis),
+                      subtitle: Text(t.artist, maxLines: 1, overflow: TextOverflow.ellipsis),
+                      selected: i == player.index,
+                      onTap: () {
+                        player.audio.seek(Duration.zero, index: i);
+                        player.audio.play();
+                        Navigator.of(ctx).pop();
+                      },
+                    );
+                  },
+                ),
+              );
+            }
+          }
+
+          class RadioTab extends StatefulWidget {
+            const RadioTab({super.key});
+
+            @override
+            State<RadioTab> createState() => _RadioTabState();
+          }
+
+          class _RadioTabState extends State<RadioTab> {
+            static const String _host = 'de1.api.radio-browser.info';
+            List<dynamic> _countries = [];
+            List<dynamic> _stations = [];
+            String _country = 'Ghana';
+            String _query = '';
+            String _countryFilter = '';
+            bool _loading = false;
+
+            @override
+            void initState() {
+              super.initState();
+              _loadCountries();
+              _loadStations(_country);
+            }
+
+            Future<void> _loadCountries() async {
+              try {
+                final list = await getList(Uri.https(_host, '/json/countries'), offlineKey: 'radio_countries');
+                if (mounted) setState(() => _countries = list.where((c) => (c['name'] ?? '').toString().isNotEmpty).toList());
+              } catch (_) {}
+            }
+
+            Future<void> _loadStations(String country) async {
+              setState(() {
+                _loading = true;
+                _country = country;
+              });
+              try {
+                final list = await getList(Uri.https(_host, '/json/stations/bycountry/$country', {
+                  'hidebroken': 'true',
+                  'order': 'clickcount',
+                  'reverse': 'true',
+                  'limit': '200',
+                }), offlineKey: 'stations_$country');
+                if (mounted) setState(() => _stations = list);
+              } catch (_) {
+                toast('Could not load stations');
+              }
+              if (mounted) setState(() => _loading = false);
+            }
+
+            @override
+            Widget build(BuildContext context) {
+              final filteredCountries = _countries.where((c) => (c['name'] ?? '').toString().toLowerCase().contains(_countryFilter.toLowerCase())).toList();
+              final filteredStations = _stations.where((s) => (s['name'] ?? '').toString().toLowerCase().contains(_query.toLowerCase())).toList();
+              
+              return Padding(
+                padding: const EdgeInsets.all(12),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text('Global FM Radio', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                    const SizedBox(height: 8),
+                    TextField(
+                      decoration: InputDecoration(
+                        hintText: 'Search country (e.g. Ghana, Nigeria)...',
+                        prefixIcon: const Icon(Icons.public),
+                        filled: true,
+                        isDense: true,
+                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: BorderSide.none),
+                      ),
+                      onChanged: (v) => setState(() => _countryFilter = v),
+                    ),
+                    const SizedBox(height: 6),
+                    DropdownButton<String>(
+                      value: filteredCountries.any((c) => c['name'] == _country) ? _country : (filteredCountries.isNotEmpty ? filteredCountries.first['name'].toString() : null),
+                      hint: Text(_country),
+                      isExpanded: true,
+                      items: filteredCountries.map<DropdownMenuItem<String>>((c) => DropdownMenuItem<String>(value: c['name'].toString(), child: Text(c['name'].toString()))).toList(),
+                      onChanged: (v) {
+                        if (v != null) _loadStations(v);
+                      },
+                    ),
+                    const SizedBox(height: 8),
+                    TextField(
+                      decoration: InputDecoration(
+                        hintText: 'Search station...',
+                        prefixIcon: const Icon(Icons.search),
+                        filled: true,
+                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: BorderSide.none),
+                      ),
+                      onChanged: (v) => setState(() => _query = v),
+                    ),
+                    const SizedBox(height: 8),
+                    Expanded(
+                      child: _loading
+                          ? const Center(child: CircularProgressIndicator())
+                          : ListView.builder(
+                              itemCount: filteredStations.length,
+                              itemBuilder: (context, i) {
+                                final s = filteredStations[i];
+                                final url = (s['url_resolved'] ?? s['url'] ?? '').toString();
+                                if (url.isEmpty) return const SizedBox.shrink();
+                                final t = Track(
+                                  id: 'radio-${s['stationuuid'] ?? url}',
+                                  title: (s['name'] ?? 'Radio').toString().trim(),
+                                  artist: _country,
+                                  url: url,
+                                  artwork: (s['favicon'] ?? '').toString(),
+                                  isLive: true,
+                                );
+                                return TrackTile(track: t, onTap: () => player.playQueue([t], 0));
+                              },
+                            ),
+                    ),
+                  ],
+                ),
+              );
+            }
+          }
+
+          class SearchItem {
+            final String title;
+            final String subtitle;
+            final String image;
+            final bool round;
+            final Track? track;
+            final Future<List<Track>> Function()? loader;
+            final FollowedArtist? follow;
+
+            const SearchItem({required this.title, this.subtitle = '', this.image = '', this.round = false, this.track, this.loader, this.follow});
+          }
+
+          class SearchTab extends StatefulWidget {
+            const SearchTab({super.key});
+
+            @override
+            State<SearchTab> createState() => _SearchTabState();
+          }
+
+          class _SearchTabState extends State<SearchTab> {
+            final TextEditingController _ctrl = TextEditingController();
+            final stt.SpeechToText _speech = stt.SpeechToText();
+            bool _listening = false;
+            int _source = 0;
+            int _mode = 0;
+            List<SearchItem> _items = [];
+            bool _loading = false;
+            String? _error;
+            String _heading = 'Trending';
+
+            late final WebViewController _webController = WebViewController()
+              ..setJavaScriptMode(JavaScriptMode.unrestricted)
+              ..setBackgroundColor(const Color(0xFF121212))
+              ..setNavigationDelegate(
+                NavigationDelegate(
+                  onPageFinished: (url) {
+                    _webController.runJavaScript('''
+                      var banners = document.querySelectorAll('.smart-banner, .banner, .download-banner, div[class*="banner"], div[class*="promotion"], div[class*="app-promotion"], header');
+                      banners.forEach(b => b.style.display = 'none');
+                    ''');
+                  },
+                ),
+              )
+              ..loadRequest(Uri.parse('https://m.soundcloud.com'));
+
+            @override
+            void initState() {
+              super.initState();
+              _run();
+            }
+
+            @override
+            void dispose() {
+              _speech.cancel();
+              _ctrl.dispose();
+              super.dispose();
+            }
+
+            Future<void> _toggleMic() async {
+              if (_listening) {
+                await _speech.stop();
+                if (mounted) setState(() => _listening = false);
+                return;
+              }
+              final ok = await _speech.initialize(
+                onStatus: (st) {
+                  if ((st == 'done' || st == 'notListening') && mounted) setState(() => _listening = false);
+                },
+                onError: (_) {
+                  if (mounted) setState(() => _listening = false);
+                },
+              );
+              if (!ok) {
+                toast('Voice search is not available. Allow microphone access in your phone settings.');
+                return;
+              }
+              setState(() => _listening = true);
+              await _speech.listen(
+                listenFor: const Duration(seconds: 20),
+                pauseFor: const Duration(seconds: 3),
+                onResult: (r) {
+                  _ctrl.text = r.recognizedWords;
+                  _ctrl.selection = TextSelection.collapsed(offset: _ctrl.text.length);
+                  if (r.finalResult) {
+                    if (mounted) setState(() => _listening = false);
+                    _run();
+                  }
+                },
+              );
+            }
+
+            Future<void> _run() async {
+              final q = _ctrl.text.trim();
+              if (_source == 3) {
+                if (q.isNotEmpty) {
+                  final uri = q.startsWith('http') ? Uri.parse(q) : Uri.parse('https://m.soundcloud.com/search?q=${Uri.encodeComponent(q)}');
+                  _webController.loadRequest(uri);
+                }
+                return;
+              }
+              setState(() {
+                _loading = true;
+                _error = null;
+                _heading = q.isEmpty ? 'Trending' : 'Results';
+              });
+              try {
+                List<SearchItem> items = [];
+                if (_source == 1) {
+                  items = await _jamendoCloud(q);
+                } else if (_source == 2) {
+                  await soundcloud.search(q);
+                  items = soundcloud.searchResults.map(_songItem).toList();
+                } else {
+                  items = await _audius(q);
+                }
+                if (items.isEmpty && _source != 2) {
+                  items = player.downloads.map(_songItem).toList();
+                }
+                if (mounted) setState(() => _items = items);
+              } catch (e) {
+                if (mounted) {
+                  setState(() => _items = player.downloads.map(_songItem).toList());
+                }
+              }
+              if (mounted) setState(() => _loading = false);
+            }
+
+            SearchItem _songItem(Track t) => SearchItem(title: t.title, subtitle: t.artist, image: t.artwork, track: t);
+
+            Future<List<SearchItem>> _audius(String q) async {
+              if (q.isEmpty) {
+                final list = await getList(Uri.parse('$kApiBase/tracks/trending').replace(queryParameters: {'app_name': kAppName}), offlineKey: 'audius_trending');
+                return audiusTracks(list).map(_songItem).toList();
+              }
+              final path = const ['tracks', 'users', 'playlists'][_mode];
+              final list = await getList(Uri.parse('$kApiBase/$path/search').replace(queryParameters: {'query': q, 'app_name': kAppName}));
+              if (_mode == 0) return audiusTracks(list).map(_songItem).toList();
+              if (_mode == 1) {
+                return list.whereType().map<SearchItem>((a) {
+                  final id = a['id'].toString();
+                  return SearchItem(
+                    title: (a['name'] ?? '').toString(),
+                    subtitle: '${a['track_count'] ?? 0} tracks',
+                    image: imgOf(a['profile_picture']),
+                    round: true,
+                    follow: FollowedArtist(source: 'audius', id: id, name: (a['name'] ?? '').toString(), image: imgOf(a['profile_picture'])),
+                    loader: () async {
+                      final r = await getList(Uri.parse('$kApiBase/users/$id/tracks').replace(queryParameters: {'app_name': kAppName, 'limit': '100'}), offlineKey: 'user_tracks_$id');
+                      return audiusTracks(r);
+                    },
+                  );
+                }).toList();
+              }
+              return list.whereType().map<SearchItem>((p) {
+                final id = p['id'].toString();
+                final user = p['user'];
+                final owner = user is Map ? (user['name'] ?? '').toString() : '';
+                return SearchItem(
+                  title: (p['playlist_name'] ?? 'Untitled Playlist').toString(),
+                  subtitle: '${p['is_album'] == true ? 'Album' : 'Playlist'} - $owner',
+                  image: imgOf(p['artwork']),
+                  loader: () async {
+                    final r = await getList(Uri.parse('$kApiBase/playlists/$id/tracks').replace(queryParameters: {'app_name': kAppName}), offlineKey: 'playlist_tracks_$id');
+                    return audiusTracks(r);
+                  },
+                );
+              }).toList();
+            }
+
+            Future<List<SearchItem>> _jamendoCloud(String q) async {
+              if (q.isEmpty) {
+                final list = await getList(jamendoUri('/tracks/', {'order': 'popularity_week', 'limit': '30'}), offlineKey: 'jamendo_trending');
+                return jamendoTracks(list).map(_songItem).toList();
+              }
+              if (_mode == 0) {
+                final list = await getList(jamendoUri('/tracks/', {'search': q, 'limit': '30'}));
+                return jamendoTracks(list).map(_songItem).toList();
+              }
+              if (_mode == 1) {
+                final list = await getList(jamendoUri('/artists/', {'namesearch': q, 'limit': '20'}));
+                return list.whereType().map<SearchItem>((a) {
+                  final id = a['id'].toString();
+                  final name = (a['name'] ?? '').toString();
+                  final image = (a['image'] ?? '').toString();
+                  return SearchItem(
+                    title: name,
+                    subtitle: 'Cloud Artist',
+                    image: image,
+                    round: true,
+                    follow: FollowedArtist(source: 'jamendo', id: id, name: name, image: image),
+                    loader: () async {
+                      final r = await getList(jamendoUri('/artists/tracks/', {'id': id}));
+                      if (r.isEmpty || r.first is! Map) return <Track>[];
+                      final tr = ((r.first as Map)['tracks'] as List?) ?? [];
+                      return jamendoTracks(tr, artist: name, image: image);
+                    },
+                  );
+                }).toList();
+              }
+              final list = await getList(jamendoUri('/albums/', {'namesearch': q, 'limit': '20'}));
+              return list.whereType().map<SearchItem>((a) {
+                final id = a['id'].toString();
+                final artist = (a['artist_name'] ?? '').toString();
+                final image = (a['image'] ?? '').toString();
+                return SearchItem(
+                  title: (a['name'] ?? 'Untitled Album').toString(),
+                  subtitle: 'Cloud Album - $artist',
+                  image: image,
+                  loader: () async {
+                    final r = await getList(jamendoUri('/albums/tracks/', {'id': id}));
+                    if (r.isEmpty || r.first is! Map) return <Track>[];
+                    final tr = ((r.first as Map)['tracks'] as List?) ?? [];
+                    return jamendoTracks(tr, artist: artist, image: image);
+                  },
+                );
+              }).toList();
+            }
+
+            Widget _results() {
+              if (_loading) return const Center(child: CircularProgressIndicator());
+              if (_items.isEmpty) return const Center(child: Text('No results found. Connect to internet or check downloads.'));
+              final songs = _items.where((i) => i.track != null).map((i) => i.track!).toList();
+              return ListView.builder(
+                itemCount: _items.length,
+                itemBuilder: (_, i) {
+                  final item = _items[i];
+                  final t = item.track;
+                  if (t != null) {
+                    return TrackTile(track: t, onTap: () => player.playQueue(songs, songs.indexWhere((s) => s.id == t.id)));
+                  }
+                  return ListTile(
+                    leading: item.round
+                        ? CircleAvatar(backgroundImage: item.image.isNotEmpty ? NetworkImage(item.image) : null, child: item.image.isEmpty ? const Icon(Icons.person) : null)
+                        : Art(url: item.image, size: 48),
+                    title: Text(item.title, maxLines: 1, overflow: TextOverflow.ellipsis),
+                    subtitle: Text(item.subtitle, maxLines: 1, overflow: TextOverflow.ellipsis),
+                    onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => TrackListPage(title: item.title, loader: item.loader!, follow: item.follow))),
+                  );
+                },
+              );
+            }
+
+            @override
+            Widget build(BuildContext context) {
+              return WillPopScope(
+                onWillPop: () async {
+                  if (_source == 3 && await _webController.canGoBack()) {
+                    await _webController.goBack();
+                    return false;
+                  }
+                  return true;
+                },
+                child: Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      TextField(
+                        controller: _ctrl,
+                        textInputAction: TextInputAction.search,
+                        decoration: InputDecoration(
+                          hintText: _listening ? 'Listening...' : (_source == 3 ? 'Search SoundCloud or enter URL...' : 'Search songs, artists, albums...'),
+                          prefixIcon: const Icon(Icons.search),
+                          suffixIcon: IconButton(
+                            tooltip: 'Voice search',
+                            icon: Icon(_listening ? Icons.mic : Icons.mic_none, color: _listening ? Colors.redAccent : null),
+                            onPressed: _toggleMic,
+                          ),
+                          filled: true,
+                          border: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: BorderSide.none),
+                        ),
+                        onSubmitted: (_) => _run(),
+                      ),
+                      const SizedBox(height: 8),
+                      Wrap(
+                        spacing: 8,
+                        children: [
+                          for (final e in const ['Audius', 'Cloud Music', 'SoundCloud API', 'SoundCloud Browser'].asMap().entries)
+                            ChoiceChip(
+                              label: Text(e.value),
+                              selected: _source == e.key,
+                              onSelected: (_) {
+                                setState(() => _source = e.key);
+                                _run();
+                              },
+                            ),
+                        ],
+                      ),
+                      const SizedBox(height: 8),
+                      if (_source != 3) ...[
+                        SegmentedButton<int>(
+                          segments: const [
+                            ButtonSegment<int>(value: 0, label: Text('Songs')),
+                            ButtonSegment<int>(value: 1, label: Text('Artists')),
+                            ButtonSegment<int>(value: 2, label: Text('Albums')),
+                          ],
+                          selected: {_mode},
+                          onSelectionChanged: (s) {
+                            setState(() => _mode = s.first);
+                            _run();
+                          },
+                        ),
+                        const SizedBox(height: 8),
+                      ],
+                      if (_heading.isNotEmpty && _source != 3) Text(_heading, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                      Expanded(
+                        child: _source == 3
+                            ? ClipRRect(
+                                borderRadius: BorderRadius.circular(8),
+                                child: WebViewWidget(controller: _webController),
+                              )
+                            : _results(),
+                      ),
+                    ],
+                  ),
+                ),
+              );
+            }
+          }
+
+          class TrackListPage extends StatefulWidget {
+            final String title;
+            final Future<List<Track>> Function() loader;
+            final FollowedArtist? follow;
+            const TrackListPage({super.key, required this.title, required this.loader, this.follow});
+
+            @override
+            State<TrackListPage> createState() => _TrackListPageState();
+          }
+
+          class _TrackListPageState extends State<TrackListPage> {
+            List<Track> _tracks = [];
+            bool _loading = true;
+            String? _error;
+
+            @override
+            void initState() {
+              super.initState();
+              _load();
+            }
+
+            Future<void> _load() async {
+              try {
+                final tracks = await widget.loader();
+                if (mounted) setState(() => _tracks = tracks);
+              } catch (_) {
+                if (mounted) setState(() => _tracks = player.downloads);
+              }
+              if (mounted) setState(() => _loading = false);
+            }
+
+            @override
+            Widget build(BuildContext context) {
+              return Scaffold(
+                appBar: AppBar(
+                  title: Text(widget.title),
+                  actions: [
+                    if (widget.follow != null)
+                      AnimatedBuilder(
+                        animation: follows,
+                        builder: (context, _) {
+                          final f = follows.isFollowing(widget.follow!);
+                          return TextButton.icon(
+                            onPressed: () => follows.toggle(widget.follow!),
+                            icon: Icon(f ? Icons.check : Icons.person_add_alt),
+                            label: Text(f ? 'Following' : 'Follow'),
+                          );
+                        },
+                      ),
+                  ],
+                ),
+                floatingActionButton: _tracks.isEmpty
+                    ? null
+                    : FloatingActionButton.extended(
+                        onPressed: () => player.playQueue(_tracks, 0),
+                        icon: const Icon(Icons.play_arrow),
+                        label: const Text('Play all'),
+                      ),
+                body: _loading
+                    ? const Center(child: CircularProgressIndicator())
+                    : _tracks.isEmpty
+                        ? const Center(child: Text('No tracks available offline'))
+                        : ListView.builder(
+                            padding: const EdgeInsets.only(bottom: 80),
+                            itemCount: _tracks.length,
+                            itemBuilder: (_, i) => TrackTile(track: _tracks[i], onTap: () => player.playQueue(_tracks, i)),
+                          ),
+              );
+            }
+          }
+
+          class LibraryTab extends StatelessWidget {
+            const LibraryTab({super.key});
+
+            @override
+            Widget build(BuildContext context) {
+              return DefaultTabController(
+                length: 3,
+                child: Column(
+                  children: [
+                    const TabBar(tabs: [Tab(text: 'Favorites'), Tab(text: 'Offline'), Tab(text: 'SoundCloud')]),
+                    Expanded(
+                      child: AnimatedBuilder(
+                        animation: Listenable.merge([player, soundcloud]),
+                        builder: (context, _) {
+                          return TabBarView(
+                            children: [
+                              _list(player.favorites, 'No favorites yet.\nTap the heart on any song or station.', false),
+                              _list(player.downloads, 'No offline tracks yet.\nTap the download icon on a song.', true),
+                              _soundcloudView(context),
+                            ],
+                          );
+                        },
+                      ),
+                    ),
+                  ],
+                ),
+              );
+            }
+
+            Widget _list(List<Track> items, String empty, bool downloadsMode) {
+              if (items.isEmpty) {
+                return Center(child: Text(empty, textAlign: TextAlign.center, style: const TextStyle(color: Colors.grey)));
+              }
+              return ListView.builder(
+                itemCount: items.length,
+                itemBuilder: (_, i) => TrackTile(
+                  track: items[i],
+                  downloadsMode: downloadsMode,
+                  onTap: () => player.playQueue(items, i),
+                ),
+              );
+            }
+
+            Widget _soundcloudView(BuildContext context) {
+              if (!soundcloud.linked) {
+                return Center(
+                  child: Padding(
+                    padding: const EdgeInsets.all(24),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Icon(Icons.cloud_sync, size: 64, color: Colors.orangeAccent),
+                        const SizedBox(height: 12),
+                        const Text('Link your SoundCloud account to sync your liked library and tracks into the app.', textAlign: TextAlign.center),
+                        const SizedBox(height: 16),
+                        FilledButton.icon(
+                          onPressed: soundcloud.linkAccount,
+                          icon: const Icon(Icons.link),
+                          label: const Text('Link SoundCloud Library'),
+                        ),
+                      ],
+                    ),
+                  ),
+                );
+              }
+              return Column(
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.all(8),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Text('SoundCloud Linked Library', style: TextStyle(fontWeight: FontWeight.bold)),
+                        TextButton.icon(
+                          onPressed: soundcloud.unlink,
+                          icon: const Icon(Icons.link_off, size: 16),
+                          label: const Text('Unlink'),
+                        ),
+                      ],
+                    ),
+                  ),
+                  Expanded(
+                    child: soundcloud.libraryTracks.isEmpty
+                        ? const Center(child: Text('No tracks found in SoundCloud library.'))
+                        : ListView.builder(
+                            itemCount: soundcloud.libraryTracks.length,
+                            itemBuilder: (_, i) {
+                              final t = soundcloud.libraryTracks[i];
+                              return ListTile(
+                                leading: Art(url: t.artwork, size: 48),
+                                title: Text(t.title, maxLines: 1, overflow: TextOverflow.ellipsis),
+                                subtitle: Text(t.artist, maxLines: 1, overflow: TextOverflow.ellipsis),
+                                trailing: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    IconButton(
+                                      icon: const Icon(Icons.download),
+                                      tooltip: 'Download to offline library',
+                                      onPressed: () => player.download(t),
+                                    ),
+                                  ],
+                                ),
+                                onTap: () => player.playQueue(soundcloud.libraryTracks, i),
+                              );
+                            },
+                          ),
+                  ),
+                ],
+              );
+            }
+          }
+
+          class EqualizerScreen extends StatefulWidget {
+            const EqualizerScreen({super.key});
+
+            @override
+            State<EqualizerScreen> createState() => _EqualizerScreenState();
+          }
+
+          class _EqualizerScreenState extends State<EqualizerScreen> {
+            String _preset = 'Custom';
+
+            Future<void> _applyPreset(AndroidEqualizerParameters p, String name) async {
+              setState(() => _preset = name);
+              final bands = p.bands;
+              final double min = p.minDecibels;
+              final double max = p.maxDecibels;
+
+              for (var b in bands) {
+                double target = 0.0;
+                final freq = b.centerFrequency;
+                if (name == 'Bass Boost') {
+                  if (freq < 300) target = max * 0.8;
+                } else if (name == 'Rock') {
+                  if (freq < 250 || freq > 4000) target = max * 0.6;
+                } else if (name == 'Pop') {
+                  if (freq >= 500 && freq <= 3000) target = max * 0.5;
+                } else if (name == 'Classical') {
+                  if (freq < 500 || freq > 5000) target = max * 0.4;
+                } else if (name == 'Vocal') {
+                  if (freq >= 1000 && freq <= 4000) target = max * 0.7;
+                }
+                await b.setGain(target.clamp(min, max));
+              }
+            }
+
+            @override
+            Widget build(BuildContext context) {
+              return Scaffold(
+                appBar: AppBar(title: const Text('Sound Studio')),
+                body: ListView(
+                  padding: const EdgeInsets.all(16),
+                  children: [
+                    StreamBuilder<bool>(
+                      stream: player.equalizer.enabledStream,
+                      builder: (context, snap) {
+                        final on = snap.data ?? false;
+                        return SwitchListTile(
+                          title: const Text('Equalizer Active', style: TextStyle(fontWeight: FontWeight.bold)),
+                          value: on,
+                          onChanged: player.equalizer.setEnabled,
+                        );
+                      },
+                    ),
+                    const Divider(),
+                    const Text('Presets', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                    const SizedBox(height: 8),
+                    FutureBuilder<AndroidEqualizerParameters>(
+                      future: player.equalizer.parameters,
+                      builder: (context, snap) {
+                        final p = snap.data;
+                        return Wrap(
+                          spacing: 8,
+                          children: ['Flat', 'Bass Boost', 'Rock', 'Pop', 'Classical', 'Vocal'].map((name) {
+                            return ChoiceChip(
+                              label: Text(name),
+                              selected: _preset == name,
+                              onSelected: (_) {
+                                if (p != null) _applyPreset(p, name);
+                              },
+                            );
+                          }).toList(),
+                        );
+                      },
+                    ),
+                    const Divider(height: 24),
+                    const Text('Frequency Bands', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                    const SizedBox(height: 8),
+                    FutureBuilder<AndroidEqualizerParameters>(
+                      future: player.equalizer.parameters,
+                      builder: (context, snap) {
+                        final p = snap.data;
+                        if (p == null) {
+                          return const Padding(
+                            padding: EdgeInsets.all(24),
+                            child: Center(child: Text('Start playing a song first to unlock the bands.', textAlign: TextAlign.center)),
+                          );
+                        }
+                        return Column(
+                          children: p.bands.map((b) {
+                            return Padding(
+                              padding: const EdgeInsets.symmetric(vertical: 4),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text('${b.centerFrequency.round()} Hz', style: const TextStyle(color: Colors.grey)),
+                                  StreamBuilder<double>(
+                                    stream: b.gainStream,
+                                    builder: (context, s) {
+                                      final v = (s.data ?? b.gain).clamp(p.minDecibels, p.maxDecibels).toDouble();
+                                      return Slider(
+                                        min: p.minDecibels,
+                                        max: p.maxDecibels,
+                                        value: v,
+                                        onChanged: (val) {
+                                          setState(() => _preset = 'Custom');
+                                          b.setGain(val);
+                                        },
+                                      );
+                                    },
+                                  ),
+                                ],
+                              ),
+                            );
+                          }).toList(),
+                        );
+                      },
+                    ),
+                    const Divider(height: 24),
+                    const Text('Volume & Loudness Boost', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                    StreamBuilder<double>(
+                      stream: player.loudness.targetGainStream,
+                      builder: (context, s) {
+                        final v = (s.data ?? 0.0).clamp(0.0, 10.0).toDouble();
+                        return Slider(
+                          min: 0,
+                          max: 10,
+                          divisions: 10,
+                          label: '${v.toStringAsFixed(1)} dB',
+                          value: v,
+                          onChanged: player.loudness.setTargetGain,
+                        );
+                      },
+                    ),
+                  ],
+                ),
+              );
+            }
+          }
+
+          class DjTab extends StatefulWidget {
+            const DjTab({super.key});
+
+            @override
+            State<DjTab> createState() => _DjTabState();
+          }
+
+          class _DjTabState extends State<DjTab> {
+            final AudioPlayer deckA = AudioPlayer();
+            final AudioPlayer deckB = AudioPlayer();
+            final AudioPlayer fxPlayer = AudioPlayer();
+            double crossfade = 0.5;
+            double tempoA = 1.0;
+            double tempoB = 1.0;
+            bool eqKillLowA = false;
+            bool eqKillMidA = false;
+            bool eqKillHighA = false;
+            bool eqKillLowB = false;
+            bool eqKillMidB = false;
+            bool eqKillHighB = false;
+            bool loopA = false;
+            bool loopB = false;
+            Track? trackA;
+            Track? trackB;
+
+            @override
+            void dispose() {
+              deckA.dispose();
+              deckB.dispose();
+              fxPlayer.dispose();
+              super.dispose();
+            }
+
+            void _updateVolumes() {
+              deckA.setVolume((1.0 - crossfade) * (eqKillLowA && eqKillMidA && eqKillHighA ? 0.0 : 1.0));
+              deckB.setVolume(crossfade * (eqKillLowB && eqKillMidB && eqKillHighB ? 0.0 : 1.0));
+            }
+
+            Future<void> _triggerSfx(String type) async {
+              try {
+                final urls = {
+                  'horn': 'https://www.myinstants.com/media/sounds/air-horn-club-dj.mp3',
+                  'scratch': 'https://www.myinstants.com/media/sounds/dj-scratch-sound-effect.mp3',
+                  'siren': 'https://www.myinstants.com/media/sounds/police-siren-sound-effect.mp3',
+                  'loop': 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3'
+                };
+                final url = urls[type];
+                if (url != null) {
+                  await fxPlayer.stop();
+                  await fxPlayer.setUrl(url);
+                  await fxPlayer.play();
+                }
+              } catch (_) {
+                toast('Error playing sound effect');
+              }
+            }
+
+            Future<void> _pickTrack(bool isA) async {
+              final List<Track> allTracks = [];
+              allTracks.addAll(player.downloads);
+              allTracks.addAll(player.favorites);
+              allTracks.addAll(soundcloud.libraryTracks);
+
+              try {
+                final OnAudioQuery query = OnAudioQuery();
+                final found = await query.querySongs(uriType: UriType.EXTERNAL, ignoreCase: true);
+                for (final s in found) {
+                  if ((s.duration ?? 0) < 30000) continue;
+                  allTracks.add(Track(
+                    id: 'dev-${s.id}',
+                    title: s.title,
+                    artist: s.artist ?? 'Unknown artist',
+                    url: s.uri ?? 'file://${s.data}',
+                    canDownload: false,
+                  ));
+                }
+              } catch (_) {}
+
+              final uniqueTracks = <String, Track>{};
+              for (var t in allTracks) {
+                uniqueTracks[t.id] = t;
+              }
+              final list = uniqueTracks.values.toList();
+
+              if (list.isEmpty) {
+                toast('No music found. Scan device music or add songs first!');
+                return;
+              }
+
+              showModalBottomSheet(
+                context: context,
+                builder: (ctx) => ListView.builder(
+                  itemCount: list.length,
+                  itemBuilder: (_, i) {
+                    final t = list[i];
+                    return ListTile(
+                      leading: Art(url: t.artwork, size: 40),
+                      title: Text(t.title, maxLines: 1, overflow: TextOverflow.ellipsis),
+                      subtitle: Text(t.artist, maxLines: 1, overflow: TextOverflow.ellipsis),
+                      onTap: () async {
+                        Navigator.of(ctx).pop();
+                        setState(() {
+                          if (isA) {
+                            trackA = t;
+                          } else {
+                            trackB = t;
+                          }
+                        });
+                        final playerRef = isA ? deckA : deckB;
+                        await playerRef.setUrl(t.url);
+                        playerRef.play();
+                      },
+                    );
+                  },
+                ),
+              );
+            }
+
+            @override
+            Widget build(BuildContext context) {
+              return Padding(
+                padding: const EdgeInsets.all(12),
+                child: Column(
+                  children: [
+                    const Text('DJ Mix Studio & Sound Panel', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                    const SizedBox(height: 8),
+                    Container(
+                      padding: const EdgeInsets.all(8),
+                      decoration: BoxDecoration(color: const Color(0xFF1E1E1E), borderRadius: BorderRadius.circular(8)),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                        children: [
+                          ElevatedButton.icon(icon: const Icon(Icons.campaign, size: 16), label: const Text('Horn'), onPressed: () => _triggerSfx('horn')),
+                          ElevatedButton.icon(icon: const Icon(Icons.disc_full, size: 16), label: const Text('Scratch'), onPressed: () => _triggerSfx('scratch')),
+                          ElevatedButton.icon(icon: const Icon(Icons.alarm, size: 16), label: const Text('Siren'), onPressed: () => _triggerSfx('siren')),
+                          ElevatedButton.icon(icon: const Icon(Icons.loop, size: 16), label: const Text('Loop Beat'), onPressed: () => _triggerSfx('loop')),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Expanded(
+                      child: Row(
+                        children: [
+                          Expanded(child: _buildDeck('DECK A', trackA, deckA, tempoA, eqKillLowA, eqKillMidA, eqKillHighA, loopA, (v) {
+                            setState(() => tempoA = v);
+                            deckA.setSpeed(v);
+                          }, (l, m, h) {
+                            setState(() {
+                              eqKillLowA = l;
+                              eqKillMidA = m;
+                              eqKillHighA = h;
+                            });
+                            _updateVolumes();
+                          }, (lVal) {
+                            setState(() => loopA = lVal);
+                            deckA.setLoopMode(lVal ? LoopMode.one : LoopMode.off);
+                          }, () {
+                            if (trackB != null) {
+                              setState(() => tempoA = tempoB);
+                              deckA.setSpeed(tempoB);
+                            }
+                          }, () => _pickTrack(true))),
+                          const SizedBox(width: 8),
+                          Expanded(child: _buildDeck('DECK B', trackB, deckB, tempoB, eqKillLowB, eqKillMidB, eqKillHighB, loopB, (v) {
+                            setState(() => tempoB = v);
+                            deckB.setSpeed(v);
+                          }, (l, m, h) {
+                            setState(() {
+                              eqKillLowB = l;
+                              eqKillMidB = m;
+                              eqKillHighB = h;
+                            });
+                            _updateVolumes();
+                          }, (lVal) {
+                            setState(() => loopB = lVal);
+                            deckB.setLoopMode(lVal ? LoopMode.one : LoopMode.off);
+                          }, () {
+                            if (trackA != null) {
+                              setState(() => tempoB = tempoA);
+                              deckB.setSpeed(tempoA);
+                            }
+                          }, () => _pickTrack(false))),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    const Text('Crossfader (A <---> B)', style: TextStyle(fontWeight: FontWeight.bold)),
+                    Row(
+                      children: [
+                        const Text('A'),
+                        Expanded(
+                          child: Slider(
+                            value: crossfade,
+                            onChanged: (v) {
+                              setState(() => crossfade = v);
+                              _updateVolumes();
+                            },
+                          ),
+                        ),
+                        const Text('B'),
+                      ],
+                    ),
+                  ],
+                ),
+              );
+            }
+
+            Widget _buildDeck(
+              String name,
+              Track? track,
+              AudioPlayer p,
+              double tempo,
+              bool killLow,
+              bool killMid,
+              bool killHigh,
+              bool isLooping,
+              ValueChanged<double> onTempo,
+              Function(bool, bool, bool) onKill,
+              ValueChanged<bool> onLoopToggle,
+              VoidCallback onSync,
+              VoidCallback onSelect,
+            ) {
+              return Card(
+                color: const Color(0xFF1E1E1E),
+                child: Padding(
+                  padding: const EdgeInsets.all(8),
+                  child: Column(
+                    children: [
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Text(name, style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.greenAccent)),
+                          OutlinedButton(onPressed: onSync, style: OutlinedButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 4)), child: const Text('SYNC', style: TextStyle(fontSize: 10))),
+                        ],
+                      ),
+                      const SizedBox(height: 2),
+                      Art(url: track?.artwork ?? '', size: 52),
+                      const SizedBox(height: 2),
+                      Text(track?.title ?? 'No track', maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
+                      Text(track?.artist ?? 'Tap Load', maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 10, color: Colors.grey)),
+                      const SizedBox(height: 4),
+                      OutlinedButton.icon(onPressed: onSelect, icon: const Icon(Icons.music_note, size: 12), label: const Text('Load', style: TextStyle(fontSize: 10))),
+                      StreamBuilder<PlayerState>(
+                        stream: p.playerStateStream,
+                        builder: (context, snap) {
+                          final playing = snap.data?.playing ?? false;
+                          return Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              IconButton(
+                                icon: Icon(playing ? Icons.pause_circle : Icons.play_circle, size: 26),
+                                onPressed: track == null ? null : () => playing ? p.pause() : p.play(),
+                              ),
+                              IconButton(
+                                icon: const Icon(Icons.replay, size: 20),
+                                onPressed: track == null ? null : () => p.seek(Duration.zero),
+                              ),
+                              IconButton(
+                                icon: Icon(Icons.loop, size: 20, color: isLooping ? Colors.amber : Colors.grey),
+                                tooltip: 'Hot Loop',
+                                onPressed: track == null ? null : () => onLoopToggle(!isLooping),
+                              ),
+                            ],
+                          );
+                        },
+                      ),
+                      const Text('EQ Kills', style: TextStyle(fontSize: 9, color: Colors.grey)),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                        children: [
+                          FilterChip(label: const Text('L', style: TextStyle(fontSize: 8)), selected: killLow, onSelected: (_) => onKill(!killLow, killMid, killHigh)),
+                          FilterChip(label: const Text('M', style: TextStyle(fontSize: 8)), selected: killMid, onSelected: (_) => onKill(killLow, !killMid, killHigh)),
+                          FilterChip(label: const Text('H', style: TextStyle(fontSize: 8)), selected: killHigh, onSelected: (_) => onKill(killLow, killMid, !killHigh)),
+                        ],
+                      ),
+                      const SizedBox(height: 2),
+                      Text('Tempo: ${tempo.toStringAsFixed(2)}x', style: const TextStyle(fontSize: 9, color: Colors.grey)),
+                      Slider(
+                        min: 0.5,
+                        max: 2.0,
+                        value: tempo,
+                        onChanged: onTempo,
+                      ),
+                    ],
+                  ),
+                ),
+              );
+            }
+          }
+
+          class LocalTab extends StatefulWidget {
+            const LocalTab({super.key});
+
+            @override
+            State<LocalTab> createState() => _LocalTabState();
+          }
+
+          class _LocalTabState extends State<LocalTab> {
+            final OnAudioQuery _query = OnAudioQuery();
+            bool _loading = true;
+            bool _denied = false;
+            List<Track> _songs = [];
+            Map<String, List<Track>> _albums = {};
+            Map<String, List<Track>> _artists = {};
+            Map<String, List<Track>> _folders = {};
+
+            @override
+            void initState() {
+              super.initState();
+              _scan();
+            }
+
+            Future<void> _scan() async {
+              setState(() {
+                _loading = true;
+                _denied = false;
+              });
+              try {
+                var ok = await _query.permissionsStatus();
+                if (!ok) ok = await _query.permissionsRequest();
+                if (!ok) {
+                  if (mounted) {
+                    setState(() {
+                      _denied = true;
+                      _loading = false;
+                    });
+                  }
+                  return;
+                }
+                final found = await _query.querySongs(
+                  sortType: SongSortType.TITLE,
+                  orderType: OrderType.ASC_OR_SMALLER,
+                  uriType: UriType.EXTERNAL,
+                  ignoreCase: true,
+                );
+                final songs = <Track>[];
+                final albums = <String, List<Track>>{};
+                final artists = <String, List<Track>>{};
+                final folders = <String, List<Track>>{};
+                for (final s in found) {
+                  if ((s.duration ?? 0) < 30000) continue;
+                  final artist = s.artist ?? 'Unknown artist';
+                  final t = Track(
+                    id: 'dev-${s.id}',
+                    title: s.title,
+                    artist: artist,
+                    url: s.uri ?? 'file://${s.data}',
+                    canDownload: false,
+                  );
+                  songs.add(t);
+                  albums.putIfAbsent(s.album ?? 'Unknown album', () => []).add(t);
+                  artists.putIfAbsent(artist, () => []).add(t);
+                  final i = s.data.lastIndexOf('/');
+                  folders.putIfAbsent(i > 0 ? s.data.substring(0, i) : '/', () => []).add(t);
+                }
+                if (mounted) {
+                  setState(() {
+                    _songs = songs;
+                    _albums = albums;
+                    _artists = artists;
+                    _folders = folders;
+                    _loading = false;
+                  });
+                }
+              } catch (e) {
+                if (mounted) setState(() => _loading = false);
+              }
+            }
+
+            Widget _groups(Map<String, List<Track>> m, IconData icon, {bool folder = false}) {
+              final keys = m.keys.toList()..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+              return ListView.builder(
+                itemCount: keys.length,
+                itemBuilder: (_, i) {
+                  final k = keys[i];
+                  final tracks = m[k]!;
+                  return ListTile(
+                    leading: Icon(icon),
+                    title: Text(folder ? k.split('/').last : k, maxLines: 1, overflow: TextOverflow.ellipsis),
+                    subtitle: Text(folder ? k : '${tracks.length} songs', maxLines: 1, overflow: TextOverflow.ellipsis),
+                    onTap: () => Navigator.of(context).push(MaterialPageRoute(
+                      builder: (_) => TrackListPage(title: folder ? k.split('/').last : k, loader: () async => tracks),
+                    )),
+                  );
+                },
+              );
+            }
+
+            @override
+            Widget build(BuildContext context) {
+              if (_loading) return const Center(child: CircularProgressIndicator());
+              if (_denied) {
+                return Center(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Text('Allow access to your music files to play them here.', textAlign: TextAlign.center),
+                      const SizedBox(height: 12),
+                      FilledButton(onPressed: _scan, child: const Text('Allow access')),
+                    ],
+                  ),
+                );
+              }
+              if (_songs.isEmpty) {
+                return Center(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Text('No music files found on this device.'),
+                      const SizedBox(height: 12),
+                      OutlinedButton(onPressed: _scan, child: const Text('Scan again')),
+                    ],
+                  ),
+                );
+              }
+              return DefaultTabController(
+                length: 4,
+                child: Column(
+                  children: [
+                    Row(
+                      children: [
+                        const Expanded(child: TabBar(tabs: [Tab(text: 'Music'), Tab(text: 'Album'), Tab(text: 'Artist'), Tab(text: 'Folder')])),
+                        IconButton(icon: const Icon(Icons.refresh), tooltip: 'Scan again', onPressed: _scan),
+                      ],
+                    ),
+                    Expanded(
+                      child: TabBarView(
+                        children: [
+                          ListView.builder(
+                            itemCount: _songs.length,
+                            itemBuilder: (_, i) => TrackTile(track: _songs[i], onTap: () => player.playQueue(_songs, i)),
+                          ),
+                          _groups(_albums, Icons.album),
+                          _groups(_artists, Icons.person),
+                          _groups(_folders, Icons.folder, folder: true),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              );
+            }
+          }
+
+          class DiscoverTab extends StatefulWidget {
+            const DiscoverTab({super.key});
+
+            @override
+            State<DiscoverTab> createState() => _DiscoverTabState();
+          }
+
+          class _DiscoverTabState extends State<DiscoverTab> {
+            static const List> _chips = [
+              {'label': 'Trending'},
+              {'label': 'Afrobeats', 'query': 'afrobeats'},
+              {'label': 'Hip-Hop', 'genre': 'Hip-Hop/Rap'},
+              {'label': 'R&B', 'genre': 'R&B/Soul'},
+              {'label': 'Pop', 'genre': 'Pop'},
+              {'label': 'Electronic', 'genre': 'Electronic'},
+              {'label': 'Reggae', 'genre': 'Reggae'},
+              {'label': 'Dancehall', 'genre': 'Dancehall'},
+              {'label': 'Gospel', 'query': 'gospel'},
+              {'label': 'Latin', 'genre': 'Latin'},
+              {'label': 'Lo-Fi', 'genre': 'Lo-Fi'},
+            ];
+
+            int _chip = 0;
+            List<Track> _tracks = [];
+            List> _playlists = [];
+            bool _loading = true;
+            String? _error;
+
+            @override
+            void initState() {
+              super.initState();
+              _loadPlaylists();
+              _loadTracks();
+            }
+
+            Future<void> _loadPlaylists() async {
+              try {
+                final list = await getList(Uri.parse('$kApiBase/playlists/trending').replace(queryParameters: {'app_name': kAppName, 'time': 'week'}), offlineKey: 'trending_playlists');
+                if (mounted) {
+                  setState(() => _playlists = list.whereType().map((m) => Map<String, dynamic>.from(m)).take(12).toList());
+                }
+              } catch (_) {}
+            }
+
+            Future<void> _loadTracks() async {
+              setState(() {
+                _loading = true;
+                _error = null;
+              });
+              try {
+                final c = _chips[_chip];
+                final Uri uri;
+                if (c['query'] != null) {
+                  uri = Uri.parse('$kApiBase/tracks/search').replace(queryParameters: {'query': c['query']!, 'app_name': kAppName});
+                } else {
+                  final qp = <String, String>{'app_name': kAppName, 'time': 'week'};
+                  if (c['genre'] != null) qp['genre'] = c['genre']!;
+                  uri = Uri.parse('$kApiBase/tracks/trending').replace(queryParameters: qp);
+                }
+                final list = await getList(uri, offlineKey: 'discover_tracks_${c['label']}');
+                if (mounted) setState(() => _tracks = audiusTracks(list));
+              } catch (_) {
+                if (mounted) setState(() => _tracks = player.downloads);
+              }
+              if (mounted) setState(() => _loading = false);
+            }
+
+            Widget _artistAvatar(FollowedArtist a) {
+              return InkWell(
+                onTap: () => Navigator.of(context).push(MaterialPageRoute(
+                  builder: (_) => TrackListPage(title: a.name, loader: () => loadArtistTracks(a), follow: a),
+                )),
+                child: Padding(
+                  padding: const EdgeInsets.only(right: 12),
+                  child: SizedBox(
+                    width: 72,
+                    child: Column(
+                      children: [
+                        CircleAvatar(
+                          radius: 30,
+                          backgroundImage: a.image.isNotEmpty ? NetworkImage(a.image) : null,
+                          child: a.image.isEmpty ? const Icon(Icons.person) : null,
+                        ),
+                        const SizedBox(height: 6),
+                        Text(a.name, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 12)),
+                      ],
+                    ),
+                  ),
+                ),
+              );
+            }
+
+            Widget _playlistCard(Map<String, dynamic> p) {
+              final name = (p['playlist_name'] ?? 'Playlist').toString();
+              final id = p['id'].toString();
+              return InkWell(
+                onTap: () => Navigator.of(context).push(MaterialPageRoute(
+                  builder: (_) => TrackListPage(
+                    title: name,
+                    loader: () async => audiusTracks(await getList(Uri.parse('$kApiBase/playlists/$id/tracks').replace(queryParameters: {'app_name': kAppName}), offlineKey: 'playlist_$id')),
+                  ),
+                )),
+                child: Padding(
+                  padding: const EdgeInsets.only(right: 12),
+                  child: SizedBox(
+                    width: 110,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Art(url: imgOf(p['artwork']), size: 110),
+                        const SizedBox(height: 6),
+                        Text(name, maxLines: 2, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 12)),
+                      ],
+                    ),
+                  ),
+                ),
+              );
+            }
+
+            @override
+            Widget build(BuildContext context) {
+              const h = TextStyle(fontSize: 16, fontWeight: FontWeight.bold);
+              return AnimatedBuilder(
+                animation: follows,
+                builder: (context, _) {
+                  return ListView(
+                    padding: const EdgeInsets.all(12),
+                    children: [
+                      if (follows.artists.isNotEmpty) ...[
+                        const Text('Following', style: h),
+                        const SizedBox(height: 8),
+                        SizedBox(
+                          height: 96,
+                          child: ListView(scrollDirection: Axis.horizontal, children: follows.artists.map(_artistAvatar).toList()),
+                        ),
+                        const SizedBox(height: 12),
+                      ],
+                      if (_playlists.isNotEmpty) ...[
+                        const Text('Trending playlists', style: h),
+                        const SizedBox(height: 8),
+                        SizedBox(
+                          height: 150,
+                          child: ListView(scrollDirection: Axis.horizontal, children: _playlists.map(_playlistCard).toList()),
+                        ),
+                        const SizedBox(height: 12),
+                      ],
+                      Wrap(
+                        spacing: 8,
+                        children: [
+                          for (var i = 0; i < _chips.length; i++)
+                            ChoiceChip(
+                              label: Text(_chips[i]['label']!),
+                              selected: _chip == i,
+                              onSelected: (_) {
+                                setState(() => _chip = i);
+                                _loadTracks();
+                              },
+                            ),
+                        ],
+                      ),
+                      const SizedBox(height: 8),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Text(_chips[_chip]['label']!, style: h),
+                          if (_tracks.isNotEmpty)
+                            TextButton.icon(
+                              onPressed: () => player.playQueue(_tracks, 0),
+                              icon: const Icon(Icons.play_arrow, size: 18),
+                              label: const Text('Play all'),
+                            ),
+                        ],
+                      ),
+                      if (_loading)
+                        const Center(child: Padding(padding: EdgeInsets.all(24), child: CircularProgressIndicator()))
+                      else if (_tracks.isEmpty)
+                        const Center(child: Padding(padding: EdgeInsets.all(24), child: Text('No tracks available offline')))
+                      else
+                        ..._tracks.asMap().entries.map((e) => TrackTile(track: e.value, onTap: () => player.playQueue(_tracks, e.key))),
+                    ],
+                  );
+                },
+              );
+            }
+          }
+          EOF
 
           python3 - << 'PY'
           import glob
