@@ -140,7 +140,6 @@ jobs:
                 }
               } catch (_) {}
 
-              // Fallback to offline cached persistent storage
               if (offlineKey != null && _prefs != null) {
                 final cachedRaw = _prefs?.getString('cache_$offlineKey');
                 if (cachedRaw != null) {
@@ -1051,7 +1050,6 @@ jobs:
                   children: [
                     const Text('Global FM Radio', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
                     const SizedBox(height: 8),
-                    // Country Search & Dropdown Filter
                     TextField(
                       decoration: InputDecoration(
                         hintText: 'Search country (e.g. Ghana, Nigeria)...',
@@ -1133,7 +1131,7 @@ jobs:
             final TextEditingController _ctrl = TextEditingController();
             final stt.SpeechToText _speech = stt.SpeechToText();
             bool _listening = false;
-            int _source = 0; // 0 Audius, 1 Cloud Music, 2 SoundCloud API, 3 SoundCloud Browser
+            int _source = 0;
             int _mode = 0;
             List<SearchItem> _items = [];
             bool _loading = false;
@@ -1226,7 +1224,6 @@ jobs:
                   items = await _audius(q);
                 }
                 if (items.isEmpty && _source != 2) {
-                  // Fallback to downloads/favorites if offline or empty
                   items = player.downloads.map(_songItem).toList();
                 }
                 if (mounted) setState(() => _items = items);
@@ -1792,7 +1789,6 @@ jobs:
 
             Future<void> _triggerSfx(String type) async {
               try {
-                // Free sample URLs for DJ soundboard effects
                 final urls = {
                   'horn': 'https://www.myinstants.com/media/sounds/air-horn-club-dj.mp3',
                   'scratch': 'https://www.myinstants.com/media/sounds/dj-scratch-sound-effect.mp3',
