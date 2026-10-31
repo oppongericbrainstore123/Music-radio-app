@@ -23,10 +23,11 @@ jobs:
         with:
           flutter-version: '3.19.x'
           channel: 'stable'
-          cache: true
+          cache: false
 
       - name: Generate and Build App
         run: |
+          rm -rf app_project
           flutter create app_project --org com.musicradio --platforms=android
           cd app_project
 
@@ -59,7 +60,6 @@ jobs:
             uses-material-design: true
           EOF
 
-          mkdir -p lib
           cat << 'EOF' > lib/main.dart
           import 'dart:async';
           import 'dart:convert';
